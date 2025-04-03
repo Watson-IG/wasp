@@ -38,10 +38,11 @@ function map_ccs_to_ref {
 
     on_target=$(awk 'NR==1 {print $1}' "${outdir}/ig-filtered_ccs_to_ref.flagstats.txt")
     full=$(awk 'NR==1 {print $1}' "${outdir}/ccs_to_ref-full.flagstats.txt")
-    percent_on=$(echo "scale=2; (100 * $on_target) / $full" | bc -l)
-    echo "$percent_on" > ${outdir}/percent_on_target.txt
+    percent_on=$(awk -v a="$on_target" -v b="$full" 'BEGIN { printf "%.2f", (100 * a / b) }')
+    echo "$percent_on" > "${outdir}/percent_on_target.txt"
+
 }
-function map_ccs_to_pers_ref {_
+function map_ccs_to_pers_ref {
     dir=$scratch/ccs_cov
     outdir=${scratch}/run_wasp/${sample}/ccs_cov
     mkdir -p $outdir
