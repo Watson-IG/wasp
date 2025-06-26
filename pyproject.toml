@@ -1,0 +1,10 @@
+[project]
+name = "wasptk"
+version = "0.1.0"
+description = "WASP Toolkit"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["pandas", "pysam"]
+
+[project.scripts]
+wasptk-read-support = "wasptk.cli:main"
