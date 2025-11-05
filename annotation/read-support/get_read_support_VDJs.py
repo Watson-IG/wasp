@@ -299,13 +299,15 @@ def parse_mpileup_and_calculate(lines, total_positions):
         if len(parts) < 5:
             continue
         read_bases = parts[4]
-        coverage = len(read_bases)
+        coverage = int(parts[3])
         total_reads += coverage
 
+       
         # Count mismatches
         # AWK used gensub(/[.,]/, "", "g", $5) => remove '.' and ',' => everything left is mismatches
-        mismatch_count = sum(1 for c in read_bases if c not in ['.', ','])
-        match_count = coverage - mismatch_count  # or sum(1 for c in read_bases if c in ['.', ','])
+        match_count = sum(1 for c in read_bases if c in ['.', ','])
+        #swap these and remove not
+        mismatch_count = coverage - match_count  # or sum(1 for c in read_bases if c in ['.', ','])
 
         mismatch_list.append(str(mismatch_count))
         match_list.append(str(match_count))
