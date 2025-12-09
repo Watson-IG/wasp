@@ -881,6 +881,8 @@ def get_read_support_ighc(fofn, scratch):
                 pass
 
 def main():
+    #sys.settrace(trace_all)
+
     if len(sys.argv) < 7:
         print("Usage: python3 this_script.py <fofn> <reffn> <IG_loci> <threads> <scratch> <minimap_option>")
         sys.exit(1)
