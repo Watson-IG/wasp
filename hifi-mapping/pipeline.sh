@@ -167,61 +167,6 @@ PYCODE
     samtools index "${outdir}/${sample}.sorted.bam"
     samtools view "${outdir}/${sample}.sorted.bam" | awk '{ print ">"$1"\n"$10 }' > "${outdir}/contigs.fasta"
 
-    # Canonical flanks path
-    blastn -query /opt/wasp/scripts/refs/5-10_left_right_flanks.fasta \
-           -subject "${outdir}/contigs.fasta" \
-           -out "${outdir}/contigs_blast_flanks.out" -outfmt 7
-
-    # Split contigs if both flanks hit at >=99% identity
-    python3 - "${outdir}/contigs_blast_flanks.out" "${outdir}/contigs.fasta" "${outdir}/contigs.split.fa" << 'PY'
-import sys, pysam
-blast, contigs, splitfa = sys.argv[1], sys.argv[2], sys.argv[3]
-
-def side(q):
-    q=q.lower()
-    return "left" if "left" in q else ("right" if "right" in q else None)
-
-best={"left":{}, "right":{}}
-with open(blast) as fh:
-    for line in fh:
-        if not line or line.startswith("#"): continue
-        p=line.rstrip("\n").split("\t")
-        if len(p)<12: continue
-        s=side(p[0])
-        if not s or float(p[2])<99.0: continue
-        sseq=p[1]; sstart=int(p[8]); send=int(p[9]); bits=float(p[11])
-        cur=best[s].get(sseq)
-        if cur is None or bits>cur["bits"]:
-            best[s][sseq]={"sstart":sstart,"send":send,"bits":bits}
-
-fa=pysam.FastaFile(contigs)
-lens={r:fa.get_reference_length(r) for r in fa.references}
-pairs=set(best["left"]).intersection(best["right"])
-changed=False
-with open(splitfa,"w") as out:
-    def w(seq):
-        for i in range(0,len(seq),60):
-            out.write(seq[i:i+60]+"\n")
-    for r in fa.references:
-        if r not in pairs:
-            out.write(f">{r}\n"); w(fa.fetch(r)); continue
-        L=best["left"][r]["sstart"]; R=best["right"][r]["send"]
-        if L>R: L,R=R,L
-        L=max(1,L); R=min(lens[r],R)
-        out.write(f">{r}__1_{L-1}\n"); w(fa.fetch(r, 0, L-1) if L>1 else "")
-        out.write(f">{r}__{L}_{R}\n"); w(fa.fetch(r, L-1, R))
-        out.write(f">{r}__{R+1}_{lens[r]}\n"); w(fa.fetch(r, R, lens[r]) if R<lens[r] else "")
-        changed=True
-print("SPLIT" if changed else "NO_SPLIT")
-PY
-
-    if [ -s "${outdir}/contigs.split.fa" ]; then
-        mv "${outdir}/contigs.split.fa" "${outdir}/contigs.fasta"
-        samtools faidx "${outdir}/contigs.fasta"
-    else
-        rm -f "${outdir}/contigs.split.fa" 2>/dev/null || true
-    fi
-
     # Realign post-split and regenerate outputs
     minimap2 -x asm20 --secondary=yes -t "${threads}" -L -a "${reffn}" "${outdir}/contigs.fasta" > "${outdir}/${sample}.sam"
     samtools view -Sbh "${outdir}/${sample}.sam" > "${outdir}/${sample}.bam"
