@@ -10,7 +10,7 @@ mkdir -p ${outdir}/reads ${outdir}/alignments ${outdir}/variants ${outdir}/allel
 # Moving and creating symlinks
 mv ${orig_outdir}/reads.fasta ${outdir}/reads/ccs-reads.fasta
 ln -s ${outdir}/reads/ccs-reads.fasta ${orig_outdir}/reads.fasta
-gzip ${outdir}/reads/ccs-reads.fasta
+
 
 mv ${orig_outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta ${outdir}/reads/hifiasm_ig-filtered_contigs.fasta
 ln -s ${outdir}/reads/hifiasm_ig-filtered_contigs.fasta ${orig_outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta
@@ -98,3 +98,5 @@ ln -s ${outdir}/stats/${sample}_ccs_to_ref-based_regions-depth.bed.gz.csi ${orig
 
 mv ${orig_outdir}/${sample}_readLengthHistogram.png ${outdir}/stats/${sample}_readLengthHistogram.png
 ln -s ${outdir}/stats/${sample}_readLengthHistogram.png ${orig_outdir}/${sample}_readLengthHistogram.png
+
+gzip ${outdir}/reads/ccs-reads.fasta
