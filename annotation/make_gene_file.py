@@ -113,7 +113,7 @@ HAPLOTYPE_WARNING = False
 
 
 # Fetch all contigs from the BAM file that cover the specified range
-def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
+def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose, list_all_contigs):
     contigs = []
     dupes = {}
 
@@ -161,7 +161,7 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
         name = read.query_name
 
         if q_start is None or q_end is None:
-            seq = ''
+            continue    # we are not going to achieve anything if there is no read coverage at all over the required range
         else:
             seq = read.query_sequence[q_start:q_end+1]
 
@@ -223,15 +223,6 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
         start_encountered = False
         wanted_length = end - start
 
-        def process_cigar(op, cigar_state):
-            if cigar_state[1] != op:
-                if cigar_state[0] > 0:
-                    cigar_state[2] += f"{cigar_state[0]}{cigar_state[1]}"
-                cigar_state[0] = 1
-                cigar_state[1] = op
-            else:
-                cigar_state[0] += 1
-
         for _ in range(leading_dels):
             add_to_annots(annot_pos, '', 'D', q_current)
             annot_pos += 1
@@ -259,17 +250,7 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
         new_contig = Contig(name, annotations, haplotype, contig_coords)
         finalise_coords(new_contig.coords)
 
-        dupe = False
-        for contig in contigs:
-            if contig.annotations['allele_sequence'] == new_contig.annotations['allele_sequence'] and contig.haplotype == new_contig.haplotype:
-                if contig.header not in dupes:
-                    dupes[contig.header] = []
-                dupes[contig.header].append(new_contig.header)
-                dupe = True
-                break
-
-        if not dupe:
-            contigs.append(new_contig)
+        contigs.append(new_contig)
 
     # remove hap 0 contigs if we have some that are hap 1 or hap 2
 
@@ -285,8 +266,40 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
             if contigs[i].haplotype == '0':
                 del contigs[i]
 
+    # if there is at least one conting in a haplotype that has no Ds in the CIGAR, remove any contigs in that haplotype that do have Ds
+
+    for hap in ['0', '1', '2']:
+        clean_seen = False
+        for contig in contigs:
+            if contig.haplotype == hap and 'D' not in contig.annotations['allele_sequence_CIGAR']:
+                clean_seen = True
+                break
+        if clean_seen:
+            for i in range(len(contigs)-1, -1, -1):
+                if contigs[i].haplotype == hap and 'D' in contigs[i].annotations['allele_sequence_CIGAR']:
+                    del contigs[i]
+
+    # dedupe unlesss we've been asked for everything
+
+    dupes = {}
+    if not list_all_contigs:
+        final_contigs = list()
+        for hap in ['0', '1', '2']:
+            found_contig = None
+            for contig in contigs:
+                if contig.haplotype == hap:
+                    if not found_contig:
+                        found_contig = contig
+                        dupes[found_contig.header] = list()
+                    else:
+                        dupes[found_contig.header].append(contig.header)
+            
+            if found_contig:
+                final_contigs.append(found_contig)
+        contigs = final_contigs
+
     if verbose:
-        print("Contigs added to analysis (excluding duplicates:")
+        print(f"Contigs added to analysis {('excluding duplicates' if not list_all_contigs else 'including duplicates')}:")
         for contig in contigs:
             if 'v-exon2' in contig.annotations:
                 print(f"{contig.header} {contig.haplotype} exon_2: {contig.annotations['v-exon2']}")
@@ -294,7 +307,7 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
     return contigs, dupes
 
 
-def process_rows(required_gene_type, refname, coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype):
+def process_rows(required_gene_type, refname, coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype, list_all_contigs):
     rows = []
 
     for gene in beds[refname].keys():
@@ -366,7 +379,7 @@ def process_rows(required_gene_type, refname, coord_map, samfile, project, subje
             if gene == debug_gene:
                 print(f"Processing {gene} for {sample_name}. Required range {seq_start} - {seq_end}")
 
-            contigs, dupes = fetch_contigs(samfile, refname, seq_start, seq_end, annotation_ranges, gene == debug_gene)
+            contigs, dupes = fetch_contigs(samfile, refname, seq_start, seq_end, annotation_ranges, gene == debug_gene, list_all_contigs)
 
             # TODO - consider trying to fetch a contig for the coding region, if we can't get the whole gene
             
@@ -398,23 +411,23 @@ def process_rows(required_gene_type, refname, coord_map, samfile, project, subje
             '''if label == 'HV':
                 start =  beds['igh'][gene]['exon_2']['start']
                 end = beds['igh'][gene]['exon_1']['end']
-                exons = fetch_contigs(samfile, 'igh', seq_start, seq_end, [(1, 1 + end - start, 'allele_sequence')], gene == debug_gene)
+                exons = fetch_contigs(samfile, 'igh', seq_start, seq_end, [(1, 1 + end - start, 'allele_sequence')], list_all_contigs, gene == debug_gene)
                 if len(contigs) != len(exons):
                     print(f"{gene}: full length {len(contigs)} exon only {len(exons)}") 
                     '''
     return rows
 
 
-def process_sample(locus, refname, project, subject, sample_file, sample_name, beds, debug_gene, sense, forced_haplotype):
+def process_sample(locus, refname, project, subject, sample_file, sample_name, beds, debug_gene, sense, forced_haplotype, list_all_contigs):
     samfile = pysam.AlignmentFile(sample_file)
     rows = []
-    rows.extend(process_rows('V', refname, v_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype))
+    rows.extend(process_rows('V', refname, v_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype, list_all_contigs))
 
     if locus in ['IGH', 'TRB', 'TRD']:
-        rows.extend(process_rows('D', refname, d_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype))
+        rows.extend(process_rows('D', refname, d_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype, list_all_contigs))
 
-    rows.extend(process_rows('J', refname, j_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype))
-    rows.extend(process_rows('C', refname, c_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype))
+    rows.extend(process_rows('J', refname, j_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype, list_all_contigs))
+    rows.extend(process_rows('C', refname, c_coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype, list_all_contigs))
 
     for row in rows:
         for el in output_headers:
@@ -440,7 +453,8 @@ def main():
     parser.add_argument('--project', '-p', default='Unknown', help='project name for the single BAM file')
     parser.add_argument('--subject', '-s', default='Unknown', help='subject name for the single BAM file')
     parser.add_argument('--sample', '-n', default='Unknown', help='sample name for the single BAM file')
-    parser.add_argument('--bam_dirs', '-d' , help='pathname to a directory BAM files (structure is project/subject/sample)')
+    parser.add_argument('--bam_dirs', '-d', help='pathname to a directory BAM files (structure is project/subject/sample)')
+    parser.add_argument('--list_all_contigs', '-l', help='list all contigs covering each gene on separate rows rather than one row per haplotype', action='store_true')
     args = parser.parse_args()
 
     locus = args.locus
@@ -476,7 +490,7 @@ def main():
         sample_file = args.bam
         forced_haplotype = None
         print(f"{project} {subject} {sample_name} {sample_file}")
-        rows.extend(process_sample(locus, refname, project, subject, sample_file, sample_name, beds, args.debug_gene, sense, forced_haplotype))
+        rows.extend(process_sample(locus, refname, project, subject, sample_file, sample_name, beds, args.debug_gene, sense, forced_haplotype, args.list_all_contigs))
     else:
         # we expect to see project/subject/sample, with one or more bam files in the sample directory, or project/subject, with bam files in the subject directory
         projlist = glob.glob(f"{args.bam_dirs}/*")
@@ -489,13 +503,13 @@ def main():
                         bamlist = glob.glob(f"{subj_item}/*.bam")
                         if bamlist:
                             sample_id = subject
-                            process_bams(args, locus, refname, sense, beds, rows, project, subject, subj_item, sample_id, bamlist)
+                            process_bams(args, locus, refname, sense, beds, rows, project, subject, subj_item, sample_id, bamlist, args.list_all_contigs)
                         else:
                             for sample_item in glob.glob(f"{subj_item}/*"):
                                 if os.path.isdir(sample_item):
                                     sample_id = os.path.basename(sample_item)
                                     bamlist = glob.glob(f"{sample_item}/*.bam")
-                                    process_bams(args, locus, refname, sense, beds, rows, project, subject, sample_item, sample_id, bamlist)
+                                    process_bams(args, locus, refname, sense, beds, rows, project, subject, sample_item, sample_id, bamlist, args.list_all_contigs)
                 
 
     headers = []
@@ -518,7 +532,7 @@ def main():
         for row in rows:
             writer.writerow(row)
 
-def process_bams(args, locus, refname, sense, beds, rows, project, subject, sample_item, sample_id, bamlist):
+def process_bams(args, locus, refname, sense, beds, rows, project, subject, sample_item, sample_id, bamlist, list_all_contigs):
     item_index = 1
     processed_haplotypes = {}   # store index assigned to any split haplotype files
     for sample_file in bamlist:
@@ -539,7 +553,7 @@ def process_bams(args, locus, refname, sense, beds, rows, project, subject, samp
 
         print(f"{project} {subject} {sample_name} {sample_file}")
 
-        rows.extend(process_sample(locus, refname, project, subject, sample_file, sample_name, beds, args.debug_gene, sense, forced_haplotype))
+        rows.extend(process_sample(locus, refname, project, subject, sample_file, sample_name, beds, args.debug_gene, sense, forced_haplotype, list_all_contigs))
             
 
 if __name__ == '__main__':
