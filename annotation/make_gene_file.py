@@ -130,6 +130,9 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose, list_a
         if read.is_unmapped:
             verbose_print(f"{read.qname}: unmapped read", verbose)
             continue
+        if read.is_duplicate:
+            verbose_print(f"{read.qname}: marked duplicate", verbose)
+            continue
         if read.reference_start > start:
             verbose_print(f"{read.qname} start: {read.reference_start} end {read.reference_end} read.ref_start > required start", verbose)
             continue

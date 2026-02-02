@@ -25,7 +25,7 @@ def get_sequence_from_csv(import_csv, gene_key, contig, start, end):
                     sequence_column = 'V-REGION'
                 elif any(substring in gene_key for substring in ['IGKJ', 'IGLJ', 'IGHJ', 'TRAJ', 'TRBJ', 'TRDJ', 'TRGJ']):
                     sequence_column = 'J-REGION'
-                elif any(substring in gene_key for substring in ['IGHD', 'TRBD', 'TRGD']):
+                elif any(substring in gene_key for substring in ['IGHD', 'TRBD','TRDD']):
                     sequence_column = 'D-REGION'
                 elif any(substring in gene_key for substring in ['IGKC', 'IGLC', 'TRAC', 'TRBC', 'TRDC', 'TRGC']):
                     sequence_column = 'C-REGION'

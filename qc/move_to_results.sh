@@ -2,6 +2,7 @@
 
 sample=$1
 orig_outdir=$2
+threads=$3
 outdir=$PWD/results/${sample}
 
 mkdir -p ${outdir}
@@ -10,7 +11,7 @@ mkdir -p ${outdir}/reads ${outdir}/alignments ${outdir}/variants ${outdir}/allel
 # Moving and creating symlinks
 mv ${orig_outdir}/reads.fasta ${outdir}/reads/ccs-reads.fasta
 ln -s ${outdir}/reads/ccs-reads.fasta ${orig_outdir}/reads.fasta
-gzip ${outdir}/reads/ccs-reads.fasta
+
 
 mv ${orig_outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta ${outdir}/reads/hifiasm_ig-filtered_contigs.fasta
 ln -s ${outdir}/reads/hifiasm_ig-filtered_contigs.fasta ${orig_outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta
@@ -44,8 +45,38 @@ for loci in "${loci_list[@]}"; do
           "${orig_outdir}/read_support/${sample}/imported_genes/${loci}/${sample}_make_gene_file_imported_with_read_support.csv"
 done
 
-mv ${orig_outdir}/vcfs/${sample}_annotated.vcf.gz ${outdir}/variants/${sample}_annotated.vcf.gz
-ln -s ${outdir}/variants/${sample}_annotated.vcf.gz ${orig_outdir}/vcfs/${sample}_annotated.vcf.gz
+
+
+# Move and link for the contigs-bcftools files
+mv ${orig_outdir}/vcfs/${sample}_contigs-bcftools_annotated.vcf.gz ${outdir}/variants/${sample}_contigs-bcftools_annotated.vcf.gz
+ln -s ${outdir}/variants/${sample}_contigs-bcftools_annotated.vcf.gz ${orig_outdir}/vcfs/${sample}_contigs-bcftools_annotated.vcf.gz
+
+mv ${orig_outdir}/vcfs/${sample}_contigs-bcftools_annotated.vcf.gz.csi ${outdir}/variants/${sample}_contigs-bcftools_annotated.vcf.gz.csi
+ln -s ${outdir}/variants/${sample}_contigs-bcftools_annotated.vcf.gz.csi ${orig_outdir}/vcfs/${sample}_contigs-bcftools_annotated.vcf.gz.csi
+
+# Move and link for the ccs-bcftools files
+mv ${orig_outdir}/vcfs/${sample}_ccs-bcftools_annotated.vcf.gz ${outdir}/variants/${sample}_ccs-bcftools_annotated.vcf.gz
+ln -s ${outdir}/variants/${sample}_ccs-bcftools_annotated.vcf.gz ${orig_outdir}/vcfs/${sample}_ccs-bcftools_annotated.vcf.gz
+
+mv ${orig_outdir}/vcfs/${sample}_ccs-bcftools_annotated.vcf.gz.csi ${outdir}/variants/${sample}_ccs-bcftools_annotated.vcf.gz.csi
+ln -s ${outdir}/variants/${sample}_ccs-bcftools_annotated.vcf.gz.csi ${orig_outdir}/vcfs/${sample}_ccs-bcftools_annotated.vcf.gz.csi
+
+# Move and link for the clair-from-contigs files
+# mv ${orig_outdir}/vcfs/${sample}_clair-from-contigs_annotated.vcf.gz ${outdir}/variants/${sample}_clair-from-contigs_annotated.vcf.gz
+# ln -s ${outdir}/variants/${sample}_clair-from-contigs_annotated.vcf.gz ${orig_outdir}/vcfs/${sample}_clair-from-contigs_annotated.vcf.gz
+
+# mv ${orig_outdir}/vcfs/${sample}_clair-from-contigs_annotated.vcf.gz.csi ${outdir}/variants/${sample}_clair-from-contigs_annotated.vcf.gz.csi
+# ln -s ${outdir}/variants/${sample}_clair-from-contigs_annotated.vcf.gz.csi ${orig_outdir}/vcfs/${sample}_clair-from-contigs_annotated.vcf.gz.csi
+
+# # Move and link for the clair-from-ccs files
+# mv ${orig_outdir}/vcfs/${sample}_clair-from-ccs_annotated.vcf.gz ${outdir}/variants/${sample}_clair-from-ccs_annotated.vcf.gz
+# ln -s ${outdir}/variants/${sample}_clair-from-ccs_annotated.vcf.gz ${orig_outdir}/vcfs/${sample}_clair-from-ccs_annotated.vcf.gz
+
+# mv ${orig_outdir}/vcfs/${sample}_clair-from-ccs_annotated.vcf.gz.csi ${outdir}/variants/${sample}_clair-from-ccs_annotated.vcf.gz.csi
+# ln -s ${outdir}/variants/${sample}_clair-from-ccs_annotated.vcf.gz.csi ${orig_outdir}/vcfs/${sample}_clair-from-ccs_annotated.vcf.gz.csi
+
+
+
 
 #mv ${orig_outdir}/ccs_cov/average_chrom_coverage.tsv ${outdir}/stats/${sample}_personal-ref-based_depth.tsv
 #ln -s ${outdir}/stats/${sample}_personal-ref-based_depth.tsv ${orig_outdir}/ccs_cov/average_chrom_coverage.tsv
@@ -68,3 +99,5 @@ ln -s ${outdir}/stats/${sample}_ccs_to_ref-based_regions-depth.bed.gz.csi ${orig
 
 mv ${orig_outdir}/${sample}_readLengthHistogram.png ${outdir}/stats/${sample}_readLengthHistogram.png
 ln -s ${outdir}/stats/${sample}_readLengthHistogram.png ${orig_outdir}/${sample}_readLengthHistogram.png
+
+pigz -p "${threads}" ${outdir}/reads/ccs-reads.fasta
