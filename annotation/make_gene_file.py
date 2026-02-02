@@ -115,6 +115,7 @@ HAPLOTYPE_WARNING = False
 # Fetch all contigs from the BAM file that cover the specified range
 def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
     contigs = []
+    dupes = {}
 
     # if verbose:
     #    breakpoint()
@@ -128,6 +129,9 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
             continue
         if read.is_unmapped:
             verbose_print(f"{read.qname}: unmapped read", verbose)
+            continue
+        if read.is_duplicate:
+            verbose_print(f"{read.qname}: marked duplicate", verbose)
             continue
         if read.reference_start > start:
             verbose_print(f"{read.qname} start: {read.reference_start} end {read.reference_end} read.ref_start > required start", verbose)
@@ -261,6 +265,9 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
         dupe = False
         for contig in contigs:
             if contig.annotations['allele_sequence'] == new_contig.annotations['allele_sequence'] and contig.haplotype == new_contig.haplotype:
+                if contig.header not in dupes:
+                    dupes[contig.header] = []
+                dupes[contig.header].append(new_contig.header)
                 dupe = True
                 break
 
@@ -287,7 +294,7 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose):
             if 'v-exon2' in contig.annotations:
                 print(f"{contig.header} {contig.haplotype} exon_2: {contig.annotations['v-exon2']}")
 
-    return contigs
+    return contigs, dupes
 
 
 def process_rows(required_gene_type, refname, coord_map, samfile, project, subject, sample_name, beds, debug_gene, sense, forced_haplotype):
@@ -362,16 +369,19 @@ def process_rows(required_gene_type, refname, coord_map, samfile, project, subje
             if gene == debug_gene:
                 print(f"Processing {gene} for {sample_name}. Required range {seq_start} - {seq_end}")
 
-            contigs = fetch_contigs(samfile, refname, seq_start, seq_end, annotation_ranges, gene == debug_gene)
+            contigs, dupes = fetch_contigs(samfile, refname, seq_start, seq_end, annotation_ranges, gene == debug_gene)
 
             # TODO - consider trying to fetch a contig for the coding region, if we can't get the whole gene
             
             for contig in contigs:
+                contig_names = contig.header
+                if contig.header in dupes:
+                    contig_names += ',' + ','.join(dupes[contig.header])
                 row = {
                     'project': project,
                     'subject': subject,
                     'sample_name': sample_name,
-                    'contig': contig.header,
+                    'contig': contig_names,
                     'haplotype': forced_haplotype if forced_haplotype else contig.haplotype,
                     'gene': gene_label,
                     'allele': '',

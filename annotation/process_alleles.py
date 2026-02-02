@@ -14,7 +14,7 @@ def process_locus(sample_id, bam_path, locus, loci, ref, bed_dir, allele_ref_dir
 
     # Make gene file
     make_gene_file_output = f"{output_dir}/{sample_id}_make_gene_file.csv"
-    make_command = f"/opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/make_gene_file.py --sample {sample_id} {locus} {loci} \"+-\" {bed_dir} {ref} {make_gene_file_output} -b {bam_path}"
+    make_command = f"/opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/make_gene_file.py -l --sample {sample_id} {locus} {loci} \"+-\" {bed_dir} {ref} {make_gene_file_output} -b {bam_path}"
     subprocess.run(make_command, shell=True, check=True)
 
     # Import from assembly
