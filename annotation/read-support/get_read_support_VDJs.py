@@ -1,22 +1,316 @@
 #!/usr/bin/env python3
 """
-This script reproduces the logic of the provided Bash script in Python.
-It does not halt on errors (similar to not using "set -e" in Bash), so it
-will continue processing other samples/regions even if a particular command fails.
-AWK-based calculations are re-implemented in Python to preserve the same logic.
-Refactored to use the 'csv' module for robust file handling.
+This script reproduces the bioinformatics pipeline logic in a single Python file.
+It integrates previously external scripts and includes robust sanity checks.
+
+Dependencies:
+    - pandas
+    - pysam
+    - bedtools (system binary)
+    - samtools (system binary)
+    - minimap2 (system binary)
 """
 
 import sys
 import os
 import subprocess
 import csv
+import shutil
+import pandas as pd
+import pysam
+
+# ==========================================
+# Helper Functions & Sanity Checks
+# ==========================================
+
+def reverse_complement(seq):
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
+    return ''.join([complement.get(base, 'N') for base in seq[::-1]])
+
+def validate_vdj_stats(sample_name, gene_name, stats_tuple):
+    """
+    Sanity Check: Validates that the summary statistics (columns) match the 
+    raw colon-separated position data strings.
+    
+    Args:
+        sample_name (str): The name of the sample.
+        gene_name (str): The gene being analyzed.
+        stats_tuple (tuple): Output from parse_mpileup_and_calculate containing:
+            0: Total_Positions (int)
+            1: Avg_Coverage (float) - Unused here
+            2: Mismatched_Positions (int) - Count of positions with >20% mismatch
+            3: Matched_Positions (int)    - Count of positions with >80% match
+            4: Position_Mismatches (str)  - Colon-separated string (e.g., "0:1:0")
+            5: Position_Matches (str)     - Colon-separated string (e.g., "10:9:10")
+            6: Percent_Accuracy (float)   - Unused here
+            7: Positions_With_10x (int)   - Count of positions with coverage >= 10
+    """
+    
+    # --- Step 1: Unpack Reported Stats from the Tuple ---
+    expected_total_positions = stats_tuple[0]
+    reported_mismatch_count  = stats_tuple[2]
+    reported_match_count     = stats_tuple[3]
+    reported_10x_count       = stats_tuple[7]
+    
+    raw_mismatch_string = stats_tuple[4]
+    raw_match_string    = stats_tuple[5]
+    
+    # Convert colon-separated strings into lists of numbers
+    # Example: "10:12:0" -> ['10', '12', '0']
+    mismatch_list = raw_mismatch_string.split(':') if raw_mismatch_string else []
+    match_list    = raw_match_string.split(':')    if raw_match_string    else []
+
+    # --- Step 2: verify Data Length Consistency ---
+    # The number of data points in the string must match the total region length
+    if len(mismatch_list) != expected_total_positions or len(match_list) != expected_total_positions:
+        print(f"[SANITY FAIL] {sample_name} {gene_name}: Data gap detected!")
+        print(f"  Expected {expected_total_positions} positions based on coordinates.")
+        print(f"  Found {len(match_list)} match entries and {len(mismatch_list)} mismatch entries.")
+        return False
+
+    # --- Step 3: Recalculate Stats from Raw Data ---
+    calculated_match_count = 0
+    calculated_mismatch_count = 0
+    calculated_10x_count = 0
+
+    # Iterate through every position in the region
+    for match_str_val, mismatch_str_val in zip(match_list, mismatch_list):
+        try:
+            # Parse read counts (int(float()) handles cases like "10.0" safely)
+            match_read_count = int(float(match_str_val))
+            mismatch_read_count = int(float(mismatch_str_val))
+            
+            total_coverage_at_pos = match_read_count + mismatch_read_count
+            
+            if total_coverage_at_pos > 0:
+                # Check definition: Matches must be > 80% of reads
+                match_ratio = match_read_count / total_coverage_at_pos
+                if match_ratio > 0.8:
+                    calculated_match_count += 1
+                
+                # Check definition: Mismatches must be > 20% of reads
+                mismatch_ratio = mismatch_read_count / total_coverage_at_pos
+                if mismatch_ratio > 0.2:
+                    calculated_mismatch_count += 1
+            
+            # Check definition: Coverage must be >= 10 reads
+            if total_coverage_at_pos >= 10:
+                calculated_10x_count += 1
+                
+        except ValueError:
+            # Skip positions with malformed data
+            continue
+
+    # --- Step 4: Compare Reported vs Calculated ---
+    errors = []
+    
+    if reported_match_count != calculated_match_count:
+        errors.append(f"Matched_Positions mismatch: Header says {reported_match_count}, Raw Data says {calculated_match_count}")
+        
+    if reported_mismatch_count != calculated_mismatch_count:
+        errors.append(f"Mismatched_Positions mismatch: Header says {reported_mismatch_count}, Raw Data says {calculated_mismatch_count}")
+        
+    if reported_10x_count != calculated_10x_count:
+        errors.append(f"10x_Coverage mismatch: Header says {reported_10x_count}, Raw Data says {calculated_10x_count}")
+
+    # --- Step 5: Report Errors ---
+    if errors:
+        print(f"[SANITY FAIL] {sample_name} {gene_name} Logic Error:")
+        for error in errors:
+            print(f"  - {error}")
+        return False
+
+    return True
+
+def append_pos_import_genes_internal(input_csv, original_output_csv, modified_output_csv):
+    """Integrates logic from append_pos_import_genes.py"""
+    shutil.copyfile(original_output_csv, modified_output_csv)
+    try:
+        output_df = pd.read_csv(modified_output_csv)
+        if 'genotyper_gene' in output_df.columns:
+            output_df.rename(columns={'genotyper_gene': 'gene'}, inplace=True)
+
+        input_df = pd.read_csv(input_csv)
+        for _, input_row in input_df.iterrows():
+            gene_name = input_row['gene']
+            if any(s in gene_name for s in ['IGKV', 'IGLV', 'IGHV', 'TRBV', 'TRDV', 'TRGV', 'TRAV']):
+                start_col, end_col = 'V-REGION_start', 'V-REGION_end'
+            elif any(s in gene_name for s in ['IGKJ', 'IGLJ', 'IGHJ', 'TRBJ', 'TRDJ', 'TRGJ', 'TRAJ']):
+                start_col, end_col = 'J-REGION_start', 'J-REGION_end'
+            elif any(s in gene_name for s in ['IGHD', 'TRBD', 'TRDD']):
+                start_col, end_col = 'D-REGION_start', 'D-REGION_end'
+            elif any(s in gene_name for s in ['IGKC', 'IGLC', 'TRBC', 'TRDC', 'TRGC', 'TRAC']):
+                start_col, end_col = 'allele_sequence_start', 'allele_sequence_end'
+            else:
+                continue
+
+            if pd.notna(input_row.get(start_col)) and pd.notna(input_row.get(end_col)):
+                mask = (output_df['contig'] == input_row['contig']) & (output_df['gene'] == input_row['gene'])
+                if mask.any():
+                    output_df.loc[mask, 'REGION_start'] = input_row[start_col]
+                    output_df.loc[mask, 'REGION_end'] = input_row[end_col]
+
+        if 'notes' in output_df.columns:
+            output_df['notes'] = output_df['notes'].fillna('').astype(str).str.replace(',', ';', regex=False)
+        output_df.to_csv(modified_output_csv, index=False)
+    except Exception as e:
+        print(f"[WARNING] Error in append_pos_import_genes_internal: {e}")
+
+def ighc_append_pos_internal(input_csv, original_output_csv, modified_output_csv):
+    """Integrates logic from ighc_append_pos.py"""
+    shutil.copyfile(original_output_csv, modified_output_csv)
+    try:
+        output_df = pd.read_csv(modified_output_csv)
+        if 'genotyper_gene' in output_df.columns:
+            output_df.rename(columns={'genotyper_gene': 'gene'}, inplace=True)
+        input_df = pd.read_csv(input_csv)
+        
+        exon_columns = [f'C-EXON_{i}_{s}' for i in range(1, 10) for s in ['start', 'end']]
+
+        for _, input_row in input_df.iterrows():
+            mask = (output_df['contig'] == input_row['contig']) & (output_df['gene'] == input_row['gene'])
+            if not mask.any(): continue
+
+            min_start = float('inf')
+            max_end = 0
+
+            for col in exon_columns:
+                if col in input_row and pd.notna(input_row[col]):
+                    val = input_row[col]
+                    output_df.loc[mask, col] = val
+                    if col.endswith("_start") and val > 0:
+                        min_start = min(min_start, val)
+                    elif col.endswith("_end"):
+                        max_end = max(max_end, val)
+
+            if min_start < float('inf'):
+                output_df.loc[mask, 'allele_sequence_start'] = min_start
+            if max_end > 0:
+                output_df.loc[mask, 'allele_sequence_end'] = max_end
+
+        output_df.to_csv(modified_output_csv, index=False)
+    except Exception as e:
+        print(f"[WARNING] Error in ighc_append_pos_internal: {e}")
+
+def get_sequence_from_row(row, gene_key):
+    """Extracts sequence string from CSV row."""
+    reverse_comp = False
+    if 'sense' in row and row['sense'] == '-':
+        reverse_comp = True
+
+    sequence_column = None
+    if any(s in gene_key for s in ['IGKV', 'IGLV', 'IGHV', 'TRAV', 'TRBV', 'TRDV', 'TRGV']):
+        sequence_column = 'V-REGION'
+    elif any(s in gene_key for s in ['IGKJ', 'IGLJ', 'IGHJ', 'TRAJ', 'TRBJ', 'TRDJ', 'TRGJ']):
+        sequence_column = 'J-REGION'
+    elif any(s in gene_key for s in ['IGHD', 'TRBD', 'TRDD']):
+        sequence_column = 'D-REGION'
+    elif any(s in gene_key for s in ['IGKC', 'IGLC', 'TRAC', 'TRBC', 'TRDC', 'TRGC']):
+        sequence_column = 'C-REGION'
+    
+    if not sequence_column or sequence_column not in row:
+        return ""
+
+    sequence = row[sequence_column]
+    if reverse_comp and sequence:
+        sequence = reverse_complement(sequence)
+    return sequence
+
+def count_matching_reads_internal(bamfile, chrom, start, end, sequence):
+    """Counts full span and perfect matches using pysam."""
+    full_span_count = 0
+    perfect_match_count = 0
+    try:
+        samfile = pysam.AlignmentFile(bamfile, "rb")
+        for read in samfile.fetch(chrom, start, end):
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                continue
+            if read.reference_start <= start and read.reference_end >= end:
+                full_span_count += 1
+                read_seq = read.query_sequence
+                if sequence and (sequence in read_seq or reverse_complement(sequence) in read_seq):
+                    perfect_match_count += 1
+        samfile.close()
+    except Exception as e:
+        print(f"[WARNING] Pysam error in count_matching_reads: {e}")
+        return 0, 0
+    return full_span_count, perfect_match_count
+
+def get_ighc_sequences_from_row(row):
+    """Extracts IGHC exon sequences."""
+    sequences = []
+    exon_start_end_list = []
+    reverse_comp = 'sense' in row and row['sense'] == '-'
+    
+    for i in range(1, 10):
+        seq_col = f'C-EXON_{i}'
+        start_col = f'C-EXON_{i}_start'
+        end_col = f'C-EXON_{i}_end'
+        sequence = row.get(seq_col, '')
+        start_val = row.get(start_col, '')
+        end_val = row.get(end_col, '')
+
+        if start_val and end_val:
+            try:
+                s_int = int(float(start_val))
+                e_int = int(float(end_val))
+                exon_start_end_list.append((s_int, e_int))
+            except ValueError: pass
+        
+        if reverse_comp and sequence:
+            sequence = reverse_complement(sequence)
+        if sequence:
+            sequences.append(sequence)
+            
+    return sequences, exon_start_end_list
+
+def count_ighc_matches_internal(bamfile, contig, start, end, sequences, exon_start_end_list):
+    """IGHC matching logic."""
+    full_span_count = 0
+    full_span_all_match_count = 0
+    
+    max_len = max(len(sequences), len(exon_start_end_list))
+    if max_len == 0: return 0, 0, [], []
+    
+    perfect_matches = [0] * len(sequences)
+    perfect_spans = [0] * len(exon_start_end_list)
+
+    try:
+        samfile = pysam.AlignmentFile(bamfile, "rb")
+        for read in samfile.fetch(contig, start, end):
+            if read.is_unmapped or read.is_secondary or read.is_supplementary: continue
+            
+            if read.reference_start <= start and read.reference_end >= end:
+                full_span_count += 1
+                read_seq = read.query_sequence
+                all_matches_flag = True
+                for seq in sequences:
+                    if not seq: continue
+                    if (seq not in read_seq) and (reverse_complement(seq) not in read_seq):
+                        all_matches_flag = False
+                        break
+                if all_matches_flag and sequences:
+                    full_span_all_match_count += 1
+            
+            read_seq = read.query_sequence
+            for idx, (ex_s, ex_e) in enumerate(exon_start_end_list):
+                if read.reference_start <= ex_s and read.reference_end >= ex_e:
+                    perfect_spans[idx] += 1
+            for idx, seq in enumerate(sequences):
+                if seq and (seq in read_seq or reverse_complement(seq) in read_seq):
+                    perfect_matches[idx] += 1
+        samfile.close()
+    except Exception as e:
+        print(f"[WARNING] Pysam error in ighc count: {e}")
+
+    return full_span_count, full_span_all_match_count, perfect_matches, perfect_spans
+
+# ==========================================
+# Main Pipeline Logic
+# ==========================================
 
 def safe_run(cmd_args):
-    """
-    Run a subprocess command without halting on error.
-    Prints a warning if the command fails, but continues execution.
-    """
+    cmd_args = [str(arg) for arg in cmd_args if str(arg).strip()]
     try:
         result = subprocess.run(cmd_args, capture_output=True, text=True)
         if result.returncode != 0:
@@ -24,228 +318,88 @@ def safe_run(cmd_args):
             print(f"stderr:\n{result.stderr}")
         return result
     except Exception as e:
-        print(f"[WARNING] Exception while running command: {' '.join(cmd_args)}")
+        print(f"[WARNING] Exception: {' '.join(cmd_args)}")
         print(e)
     return None
 
 def run_make_ref_masked(reffn, IG_loci, scratch):
-    """
-    Masks the given reference with bedtools using the IG_loci regions,
-    then indexes the masked reference with samtools.
-    """
     masked_ref = os.path.join(scratch, "ref_IG_masked.fasta")
-
-    # bedtools maskfasta
-    safe_run([
-        "bedtools", "maskfasta",
-        "-fi", reffn,
-        "-bed", IG_loci,
-        "-fo", masked_ref
-    ])
-    
-    # samtools faidx
+    safe_run(["bedtools", "maskfasta", "-fi", reffn, "-bed", IG_loci, "-fo", masked_ref])
     safe_run(["samtools", "faidx", masked_ref])
 
 def run_map_ccs_to_pers(fofn, scratch, mask_ref, minimap_option, threads):
-    """
-    Reads a tab-delimited FOFN (list of samples and inputs).
-    For each sample:
-      - Creates output directories
-      - Extracts contigs from the assembly BAM into a FASTA
-      - Concatenates masked ref + personalized contigs
-      - Aligns reads.fasta to that personalized reference
-      - Sorts and indexes the alignment
-    """
     reads_fasta = os.path.join(scratch, "reads.fasta")
-
     with open(fofn, 'r', newline='') as infile:
         reader = csv.reader(infile, delimiter='\t')
         for cols in reader:
-            if not cols: continue 
-
-            # sample, asm_bam, chr2_gene, chr2_import, chr22_gene, chr22_import,
-            # igh_gene, igh_import, ighc_gene, ighc_import,
-            # trb_gene, trb_import, trg_gene, trg_import,
-            # trd_gene, trd_import, tra_gene, tra_import, ccs_bam
-            
-            if len(cols) <= 18:
-                continue
-
-            sample     = cols[0]
-            asm_bam    = cols[1]
-            ccs_bam    = cols[18]
-
+            if not cols or len(cols) <= 18: continue
+            sample = cols[0]
+            asm_bam = cols[1]
             print(f"Sample is {sample}")
-            print(f"CCS bam is {ccs_bam}")
-
             outd = os.path.join(scratch, "read_support", sample)
             os.makedirs(os.path.join(outd, "ccs_to_pers"), exist_ok=True)
 
             safe_run(["samtools", "faidx", reads_fasta])
-
             contigs_fa = os.path.join(outd, "ccs_to_pers", "contigs.fasta")
             try:
-                with subprocess.Popen(
-                    ["samtools", "view", "-F", "0x100", "-F", "0x800", asm_bam],
-                    stdout=subprocess.PIPE,
-                    text=True
-                ) as proc, open(contigs_fa, 'w') as contigs_out:
-                    for bam_line in proc.stdout:
-                        fields = bam_line.strip().split('\t')
-                        if len(fields) < 10:
-                            continue
-                        read_name = fields[0]
-                        seq       = fields[9]
-                        contigs_out.write(f">{read_name}\n{seq}\n")
-            except Exception as e:
-                print(f"[WARNING] Failed extracting contigs from {asm_bam} for sample {sample}")
-                print(e)
+                with subprocess.Popen(["samtools", "view", "-F", "0x100", "-F", "0x800", asm_bam], stdout=subprocess.PIPE, text=True) as proc, open(contigs_fa, 'w') as contigs_out:
+                    for line in proc.stdout:
+                        fields = line.strip().split('\t')
+                        if len(fields) >= 10: contigs_out.write(f">{fields[0]}\n{fields[9]}\n")
+            except Exception as e: print(f"[WARNING] Contig extraction failed: {e}")
             
             safe_run(["samtools", "faidx", contigs_fa])
-            
             pers_ref = os.path.join(outd, "ccs_to_pers", "pers_ref.fasta")
             try:
-                with open(pers_ref, 'w') as p_out, \
-                     open(mask_ref, 'r') as mask_in, \
-                     open(contigs_fa, 'r') as contigs_in:
-                    p_out.write(mask_in.read())
-                    p_out.write(contigs_in.read())
-            except Exception as e:
-                print(f"[WARNING] Could not create personalized reference for sample {sample}")
-                print(e)
-
+                with open(pers_ref, 'w') as p, open(mask_ref, 'r') as m, open(contigs_fa, 'r') as c:
+                    p.write(m.read() + c.read())
+            except Exception: pass
             safe_run(["samtools", "faidx", pers_ref])
             
             sam_out = os.path.join(outd, "ccs_to_pers", "output.sam")
             bam_out = os.path.join(outd, "ccs_to_pers", "output.bam")
             sorted_bam = os.path.join(outd, "ccs_to_pers", "output.sorted.bam")
-
-            safe_run([
-                "minimap2",
-                "-ax", minimap_option,
-                "--secondary=yes",
-                "-t", str(threads),
-                "-L",
-                pers_ref,
-                reads_fasta,
-                "-o", sam_out
-            ])
+            safe_run(["minimap2", "-ax", minimap_option, "--secondary=yes", "-t", str(threads), "-L", pers_ref, reads_fasta, "-o", sam_out])
             safe_run(["samtools", "view", "-Sbh", sam_out, "-o", bam_out])
             safe_run(["samtools", "sort", "-@", str(threads), bam_out, "-o", sorted_bam])
             safe_run(["samtools", "index", sorted_bam])
-
-            try:
-                os.remove(sam_out)
-            except OSError:
-                pass
+            try: os.remove(sam_out)
+            except OSError: pass
 
 def run_append_pos(fofn, scratch):
-    """
-    For each sample in the FOFN, calls external Python scripts to append
-    positional information to various gene imports.
-    """
     with open(fofn, 'r', newline='') as infile:
         reader = csv.reader(infile, delimiter='\t')
-        
         for cols in reader:
-            if not cols: continue
-            
-            sample       = cols[0]
-            if len(cols) < 18:
-                continue
-
-            chr2_gene    = cols[2]
-            chr2_import  = cols[3]
-            chr22_gene   = cols[4]
-            chr22_import = cols[5]
-            igh_gene     = cols[6]
-            igh_import   = cols[7]
-            ighc_gene    = cols[8]
-            ighc_import  = cols[9]
-            trb_gene     = cols[10]
-            trb_import   = cols[11]
-            trg_gene     = cols[12]
-            trg_import   = cols[13]
-            trd_gene     = cols[14]
-            trd_import   = cols[15]
-            tra_gene     = cols[16]
-            tra_import   = cols[17]
-
+            if not cols or len(cols) < 18: continue
+            sample = cols[0]
             base_outd = os.path.join(scratch, "read_support", sample, "imported_genes")
-
+            
+            # Map paths
             paths = {
-                "IGK": {
-                    "import_src": chr2_import,
-                    "import_out": os.path.join(base_outd, "IGK", os.path.basename(chr2_import))
-                },
-                "IGL": {
-                    "import_src": chr22_import,
-                    "import_out": os.path.join(base_outd, "IGL", os.path.basename(chr22_import))
-                },
-                "IGH": {
-                    "import_src": igh_import,
-                    "import_out": os.path.join(base_outd, "IGH", os.path.basename(igh_import))
-                },
-                "IGHC": {
-                    "import_src": ighc_import,
-                    "import_out": os.path.join(base_outd, "IGHC", os.path.basename(ighc_import))
-                },
-                "TRB": {
-                    "import_src": trb_import,
-                    "import_out": os.path.join(base_outd, "TRB", os.path.basename(trb_import))
-                },
-                "TRG": {
-                    "import_src": trg_import,
-                    "import_out": os.path.join(base_outd, "TRG", os.path.basename(trg_import))
-                },
-                "TRD": {
-                    "import_src": trd_import,
-                    "import_out": os.path.join(base_outd, "TRD", os.path.basename(trd_import))
-                },
-                "TRA": {
-                    "import_src": tra_import,
-                    "import_out": os.path.join(base_outd, "TRA", os.path.basename(cols[17]))
-                }
+                "IGK": {"src": cols[3], "out": os.path.join(base_outd, "IGK", os.path.basename(cols[3]))},
+                "IGL": {"src": cols[5], "out": os.path.join(base_outd, "IGL", os.path.basename(cols[5]))},
+                "IGH": {"src": cols[7], "out": os.path.join(base_outd, "IGH", os.path.basename(cols[7]))},
+                "IGHC": {"src": cols[9], "out": os.path.join(base_outd, "IGHC", os.path.basename(cols[9]))},
+                "TRB": {"src": cols[11], "out": os.path.join(base_outd, "TRB", os.path.basename(cols[11]))},
+                "TRG": {"src": cols[13], "out": os.path.join(base_outd, "TRG", os.path.basename(cols[13]))},
+                "TRD": {"src": cols[15], "out": os.path.join(base_outd, "TRD", os.path.basename(cols[15]))},
+                "TRA": {"src": cols[17], "out": os.path.join(base_outd, "TRA", os.path.basename(cols[17]))}
             }
 
-            os.makedirs(base_outd, exist_ok=True)
+            for _, info in paths.items():
+                os.makedirs(os.path.dirname(info["out"]), exist_ok=True)
             
-            for region_type, info in paths.items():
-                os.makedirs(os.path.dirname(info["import_out"]), exist_ok=True)
-            
-            try:
-                script_base = "/opt/wasp/scripts/annotation/read-support"
-                
-                standard_args = [
-                    (chr2_gene, chr2_import, paths["IGK"]["import_out"]),
-                    (chr22_gene, chr22_import, paths["IGL"]["import_out"]),
-                    (igh_gene, igh_import, paths["IGH"]["import_out"]),
-                    (trb_gene, trb_import, paths["TRB"]["import_out"]),
-                    (trg_gene, trg_import, paths["TRG"]["import_out"]),
-                    (tra_gene, tra_import, paths["TRA"]["import_out"]),
-                    (trd_gene, trd_import, paths["TRD"]["import_out"]),
-                ]
-                
-                for g, imp, out in standard_args:
-                    safe_run([
-                        "/opt/wasp/conda/bin/python",
-                        f"{script_base}/append_pos_import_genes.py",
-                        g, imp, out
-                    ])
-                
-                safe_run([
-                    "/opt/wasp/conda/bin/python",
-                    f"{script_base}/ighc_append_pos.py",
-                    ighc_gene, ighc_import, paths["IGHC"]["import_out"]
-                ])
-            except Exception as e:
-                print(f"[WARNING] Failed to run append_pos for sample {sample}")
-                print(e)
+            standard_args = [
+                (cols[2], cols[3], paths["IGK"]["out"]), (cols[4], cols[5], paths["IGL"]["out"]),
+                (cols[6], cols[7], paths["IGH"]["out"]), (cols[10], cols[11], paths["TRB"]["out"]),
+                (cols[12], cols[13], paths["TRG"]["out"]), (cols[16], cols[17], paths["TRA"]["out"]),
+                (cols[14], cols[15], paths["TRD"]["out"]),
+            ]
+            for g, imp, out in standard_args:
+                append_pos_import_genes_internal(g, imp, out)
+            ighc_append_pos_internal(cols[8], cols[9], paths["IGHC"]["out"])
 
 def parse_mpileup_and_calculate(lines, total_positions):
-    """
-    Reproduce the AWK logic from get_read_support_vdj3.
-    """
     total_reads = 0
     mismatched_positions = 0
     matched_positions = 0
@@ -254,102 +408,61 @@ def parse_mpileup_and_calculate(lines, total_positions):
     match_list = []
 
     for line in lines:
-        if not line.strip():
-            continue
+        if not line.strip(): continue
         parts = line.strip().split()
-        if len(parts) < 5:
-            continue
-        read_bases = parts[4]
+        if len(parts) < 5: continue
         coverage = int(parts[3])
+        read_bases = parts[4]
         total_reads += coverage
 
         match_count = sum(1 for c in read_bases if c in ['.', ','])
         mismatch_count = coverage - match_count
-
         mismatch_list.append(str(mismatch_count))
         match_list.append(str(match_count))
 
-        if coverage >= 10:
-            positions_with_10x += 1
+        if coverage >= 10: positions_with_10x += 1
         
         mismatch_rate = mismatch_count / coverage if coverage > 0 else 0
         match_rate = match_count / coverage if coverage > 0 else 0
         
-        if mismatch_rate > 0.2:
-            mismatched_positions += 1
-        if match_rate > 0.8:
-            matched_positions += 1
+        if mismatch_rate > 0.2: mismatched_positions += 1
+        if match_rate > 0.8: matched_positions += 1
 
     avg_reads_per_position = total_reads / total_positions if total_positions > 0 else 0
     percent_accuracy = (matched_positions / total_positions) * 100 if total_positions > 0 else 0
 
-    mismatch_str = ":".join(mismatch_list)
-    match_str = ":".join(match_list)
-
-    return (
-        total_positions,
-        avg_reads_per_position,
-        mismatched_positions,
-        matched_positions,
-        mismatch_str,
-        match_str,
-        percent_accuracy,
-        positions_with_10x
-    )
+    return (total_positions, avg_reads_per_position, mismatched_positions, matched_positions,
+            ":".join(mismatch_list), ":".join(match_list), percent_accuracy, positions_with_10x)
 
 def get_read_support_vdj3(fofn, scratch):
-    """
-    For each sample, processes each gene_type in [IGK, IGL, IGH, TRB, TRG, TRD, TRA],
-    runs samtools mpileup, and merges results using csv module.
-    """
     gene_types = ["IGK", "IGL", "IGH", "TRB", "TRG", "TRD", "TRA"]
 
     with open(fofn, 'r', newline='') as infile:
         reader = csv.reader(infile, delimiter='\t')
-        
         for cols in reader:
-            if not cols or len(cols) < 17:
-                continue
-            
+            if not cols or len(cols) < 17: continue
             sample = cols[0]
             bam_file = os.path.join(scratch, "read_support", sample, "ccs_to_pers", "output.sorted.bam")
             ref = os.path.join(scratch, "read_support", sample, "ccs_to_pers", "pers_ref.fasta")
             base_outd = os.path.join(scratch, "read_support", sample, "imported_genes")
 
-            if not os.path.isfile(bam_file + ".bai"):
-                safe_run(["samtools", "index", bam_file])
+            if not os.path.isfile(bam_file + ".bai"): safe_run(["samtools", "index", bam_file])
 
             for gene_type in gene_types:
                 import_out = os.path.join(base_outd, gene_type, f"{sample}_make_gene_file_imported.csv")
-                if not os.path.isfile(import_out):
-                    continue
+                if not os.path.isfile(import_out): continue
                 
                 tmp_file = import_out + "_read_support.tmp"
 
-                with open(import_out, 'r', newline='') as f_in, \
-                     open(tmp_file, 'w', newline='') as f_tmp:
-                    
-                    csv_in = csv.reader(f_in)
+                with open(import_out, 'r', newline='') as f_in, open(tmp_file, 'w', newline='') as f_tmp:
+                    csv_in = csv.DictReader(f_in)
                     csv_out = csv.writer(f_tmp)
 
-                    try:
-                        headers = next(csv_in)
-                    except StopIteration:
-                        continue 
-
-                    try:
-                        contig_col = headers.index("contig")
-                        start_col = headers.index("REGION_start")
-                        end_col = headers.index("REGION_end")
-                        gene_col = headers.index("gene")
-                    except ValueError:
-                        print(f"[WARNING] Missing required columns in {import_out}")
-                        continue
                     
                     header_row = [
                         "Total_Positions", "Average_Coverage",
-                        "Mismatched_Positions_Coverage_10_Or_Greater",
-                        "Matched_Positions_Coverage_10_Or_Greater",
+                        "Mismatched_Positions",          # Previously ...Coverage_10_Or_Greater
+                        "Matched_Positions",             # Previously ...Coverage_10_Or_Greater
                         "Position_Mismatches", "Position_Matches",
                         "Percent_Accuracy", "Positions_With_At_Least_10x_Coverage",
                         "Fully_Spanning_Reads", "Fully_Spanning_Reads_100%_Match"
@@ -357,234 +470,138 @@ def get_read_support_vdj3(fofn, scratch):
                     csv_out.writerow(header_row)
 
                     for row_data in csv_in:
-                        if not row_data: continue
-                        
-                        # CHANGE: Split contig on comma and take the first one
-                        contig = row_data[contig_col].split(',')[0].strip()
-                        
+                        contig_raw = row_data.get('contig', '')
+                        contig = contig_raw.split(',')[0].strip()
+                        gene = row_data.get('gene', '')
+
                         try:
-                            start = int(float(row_data[start_col]))
-                            end = int(float(row_data[end_col]))
-                        except ValueError:
+                            start = int(float(row_data['REGION_start']))
+                            end = int(float(row_data['REGION_end']))
+                        except (ValueError, KeyError):
+                            csv_out.writerow([""]*10)
                             continue
                         
                         region = f"{contig}:{start}-{end}"
-                        gene = row_data[gene_col]
-
                         contig_filename = contig.replace('/', '_')
                         tmp_bam = os.path.join(base_outd, gene_type, f"{contig_filename}_{start}_{end}.bam")
                         os.makedirs(os.path.dirname(tmp_bam), exist_ok=True)
-
-                        print(f"Processing region {region} for sample {sample}, gene_type={gene_type}")
                         
-                        safe_run([
-                            "samtools", "view", "-F", "0x100", "-F", "0x800",
-                            "-b", bam_file,
-                            "-o", tmp_bam, 
-                            "-U", "/dev/null",
-                            region
-                        ])
+                        safe_run(["samtools", "view", "-F", "0x100", "-F", "0x800", "-b", bam_file, "-o", tmp_bam, "-U", "/dev/null", region])
                         safe_run(["samtools", "index", tmp_bam])
 
-                        mpileup_cmd = [
-                            "samtools", "mpileup",
-                            "-f", ref,
-                            "-r", region,
-                            tmp_bam
-                        ]
-                        result = safe_run(mpileup_cmd)
-                        
+                        result = safe_run(["samtools", "mpileup", "-f", ref, "-r", region, tmp_bam])
                         output_fields = [""] * 10 
-
                         if result and result.returncode == 0:
                             mpileup_lines = result.stdout.split('\n')
                             total_positions = end - start + 1
-
-                            (
-                                tpos, avg_cov, mism_pos, mat_pos,
-                                mism_str, mat_str, pct_acc, pos_10x
-                            ) = parse_mpileup_and_calculate(mpileup_lines, total_positions)
-
-                            match_cmd = [
-                                "/opt/wasp/conda/bin/python",
-                                "/opt/wasp/scripts/annotation/read-support/match_subsequences.py",
-                                tmp_bam, contig, str(start), str(end), gene, import_out
-                            ]
-                            match_res = safe_run(match_cmd)
-                            match_out = ""
-                            if match_res and match_res.returncode == 0:
-                                match_out = match_res.stdout.strip()
-
-                            output_fields = [
-                                tpos, avg_cov, mism_pos, mat_pos,
-                                mism_str, mat_str, pct_acc, pos_10x
-                            ]
+                            stats = parse_mpileup_and_calculate(mpileup_lines, total_positions)
                             
-                            if match_out:
-                                output_fields.extend(match_out.split(','))
-                        
-                        csv_out.writerow(output_fields)
+                            # --- SANITY CHECK: Logic Consistency ---
+                            validate_vdj_stats(sample, gene, stats)
+                            # ---------------------------------------
 
+                            output_fields = list(stats)
+
+                            # --- SANITY CHECK: Sequence ---
+                            sequence = get_sequence_from_row(row_data, gene)
+                            if not sequence or len(sequence) < 1:
+                                print(f"[WARNING] {sample} {gene}: Sequence missing or short (<1bp).")
+                            # ------------------------------
+
+                            if sequence:
+                                full_span, perf_match = count_matching_reads_internal(tmp_bam, contig, start, end, sequence)
+                                output_fields.append(full_span)
+                                output_fields.append(perf_match)
+                            else:
+                                output_fields.append(0)
+                                output_fields.append(0)
+
+                        csv_out.writerow(output_fields)
                         try:
                             os.remove(tmp_bam)
                             os.remove(tmp_bam + ".bai")
-                        except OSError:
-                            pass
+                        except OSError: pass
 
-                combined_file = import_out.replace(".csv", "_combined.csv")
-                final_output = import_out.replace(".csv", "_with_read_support.csv")
+                # --- SANITY CHECK: Merge Verification ---
                 try:
-                    with open(import_out, 'r', newline='') as f1, \
-                         open(tmp_file, 'r', newline='') as f2, \
-                         open(combined_file, 'w', newline='') as fc:
-                        
-                        r1 = csv.reader(f1)
-                        r2 = csv.reader(f2)
-                        w = csv.writer(fc)
-                        
-                        for row1, row2 in zip(r1, r2):
-                            w.writerow(row1 + row2)
-                            
+                    df_orig = pd.read_csv(import_out)
+                    df_new = pd.read_csv(tmp_file)
+                    
+                    if len(df_orig) != len(df_new):
+                        print(f"[CRITICAL] {sample} {gene_type}: Merge mismatch! Orig={len(df_orig)}, New={len(df_new)}. Skipping merge.")
+                    else:
+                        df_combined = pd.concat([df_orig, df_new], axis=1)
+                        if 'subject' in df_combined.columns: df_combined['subject'] = sample
+                        if 'sample_name' in df_combined.columns: df_combined['sample_name'] = sample
+                        df_combined.to_csv(import_out.replace(".csv", "_with_read_support.csv"), index=False)
                 except Exception as e:
-                    print(f"[WARNING] Failed merging {import_out} and {tmp_file}")
-                    print(e)
-                    continue
-
-                try:
-                    with open(combined_file, 'r', newline='') as f_in, \
-                         open(final_output, 'w', newline='') as f_out:
-                        
-                        r = csv.reader(f_in)
-                        w = csv.writer(f_out)
-                        
-                        first_line = True
-                        for row in r:
-                            if first_line:
-                                w.writerow(row)
-                                first_line = False
-                            else:
-                                if len(row) > 2:
-                                    row[1] = sample
-                                    row[2] = sample
-                                w.writerow(row)
-                except Exception as e:
-                    print(f"[WARNING] Failed updating subject/sample columns in {combined_file}")
-                    print(e)
-                    continue
-
-                try:
-                    os.remove(combined_file)
-                    os.remove(tmp_file)
-                except OSError:
-                    pass
+                    print(f"[WARNING] Failed merging CSVs for {sample}: {e}")
+                
+                try: os.remove(tmp_file)
+                except OSError: pass
 
 def parse_mpileup_ighc(lines, total_positions):
-    """
-    Reproduce the AWK logic from get_read_support_ighc.
-    """
     total_reads = 0
     mismatched_positions = 0
     matched_positions = 0
     mismatch_list = []
     match_list = []
-    mismatched_positions_cov_lt10 = 0
-    mismatched_positions_cov_ge10 = 0
-    matched_positions_cov_lt10 = 0
-    matched_positions_cov_ge10 = 0
+    mism_lt10 = mism_ge10 = mat_lt10 = mat_ge10 = 0
 
     for line in lines:
-        if not line.strip():
-            continue
+        if not line.strip(): continue
         parts = line.strip().split()
-        if len(parts) < 5:
-            continue
+        if len(parts) < 5: continue
         coverage = int(parts[3])
         read_bases = parts[4]
         total_reads += coverage
-
+        
         matches = sum(1 for c in read_bases if c in ['.', ','])
         mismatches = coverage - matches
-
         mismatch_list.append(str(mismatches))
-        match_list.append(str(matches))
+        match_list.append(str(matches)) 
 
         mismatch_rate = mismatches / coverage if coverage > 0 else 0
         match_rate = matches / coverage if coverage > 0 else 0
 
         if mismatch_rate > 0.2:
             mismatched_positions += 1
-            if coverage < 10:
-                mismatched_positions_cov_lt10 += 1
-            else:
-                mismatched_positions_cov_ge10 += 1
+            if coverage < 10: mism_lt10 += 1
+            else: mism_ge10 += 1
 
         if match_rate >= 0.8:
             matched_positions += 1
-            if coverage < 10:
-                matched_positions_cov_lt10 += 1
-            else:
-                matched_positions_cov_ge10 += 1
+            if coverage < 10: mat_lt10 += 1
+            else: mat_ge10 += 1
 
     percent_accuracy = (matched_positions / total_positions) * 100 if total_positions > 0 else 0
     avg_cov = (total_reads/total_positions) if total_positions > 0 else 0
-    pos_10x = (mismatched_positions_cov_ge10 + matched_positions_cov_ge10)
+    pos_10x = (mism_ge10 + mat_ge10)
 
-    return (
-        total_positions, total_reads, avg_cov, mismatched_positions, matched_positions,
-        ":".join(mismatch_list), ":".join(match_list),
-        mismatched_positions_cov_lt10, mismatched_positions_cov_ge10,
-        matched_positions_cov_lt10, matched_positions_cov_ge10,
-        pos_10x, percent_accuracy
-    )
+    return (total_positions, total_reads, avg_cov, mismatched_positions, matched_positions,
+            ":".join(mismatch_list), ":".join(match_list), mism_lt10, mism_ge10, mat_lt10, mat_ge10,
+            pos_10x, percent_accuracy)
 
 def get_read_support_ighc(fofn, scratch):
-    """
-    Specialized read-support calculation for IGHC genes using csv module.
-    """
     with open(fofn, 'r', newline='') as infile:
         reader = csv.reader(infile, delimiter='\t')
-        
         for cols in reader:
-            if not cols or len(cols) < 17:
-                continue
-            
+            if not cols or len(cols) < 17: continue
             sample = cols[0]
             bam_file = os.path.join(scratch, "read_support", sample, "ccs_to_pers", "output.sorted.bam")
             ref = os.path.join(scratch, "read_support", sample, "ccs_to_pers", "pers_ref.fasta")
             base_outd = os.path.join(scratch, "read_support", sample, "imported_genes")
-
-            if not os.path.isfile(bam_file + ".bai"):
-                safe_run(["samtools", "index", bam_file])
-
+            
+            if not os.path.isfile(bam_file + ".bai"): safe_run(["samtools", "index", bam_file])
             gene_type = "IGHC"
             import_out = os.path.join(base_outd, gene_type, f"{sample}_make_gene_file_imported.csv")
-            if not os.path.isfile(import_out):
-                continue
+            if not os.path.isfile(import_out): continue
 
             tmp_file = import_out + "_read_support.tmp"
-            
-            with open(import_out, 'r', newline='') as f_in, \
-                 open(tmp_file, 'w', newline='') as f_tmp:
-                
-                csv_in = csv.reader(f_in)
+            with open(import_out, 'r', newline='') as f_in, open(tmp_file, 'w', newline='') as f_tmp:
+                csv_in = csv.DictReader(f_in)
                 csv_out = csv.writer(f_tmp)
-
-                try:
-                    headers = next(csv_in)
-                except StopIteration:
-                    continue
-
-                try:
-                    contig_col = headers.index("contig")
-                    gene_col = headers.index("gene")
-                except ValueError:
-                    continue
-
-                exon_cols = {}
-                for i, h in enumerate(headers):
-                    if h.startswith("C-EXON_") and (h.endswith("_start") or h.endswith("_end")):
-                        exon_cols[h] = i
-
+                
                 header_row = [
                     "Total_Positions", "Total_Reads_by_Positions", "Average_Coverage",
                     "Mismatched_Positions", "Matched_Positions",
@@ -605,192 +622,83 @@ def get_read_support_ighc(fofn, scratch):
                 csv_out.writerow(header_row)
 
                 for row_data in csv_in:
-                    if not row_data: continue
-                    
-                    # CHANGE: Split contig on comma and take the first one
-                    contig = row_data[contig_col].split(',')[0].strip()
-                    gene = row_data[gene_col]
-                    
+                    contig = row_data.get('contig', '').split(',')[0].strip()
                     contig_filename = contig.replace('/', '_')
                     bed_file = os.path.join(base_outd, gene_type, f"{contig_filename}.bed")
                     os.makedirs(os.path.dirname(bed_file), exist_ok=True)
 
+                    min_start, max_end, total_positions = None, None, 0
                     with open(bed_file, 'w') as bed_out:
-                        for k, idx in exon_cols.items():
-                            if "_start" in k:
-                                exon_start_str = row_data[idx]
-                                exon_end_key = k.replace("_start", "_end")
-                                if exon_end_key not in exon_cols:
-                                    continue
-                                exon_end_str = row_data[exon_cols[exon_end_key]]
-
+                        for i in range(1, 10):
+                            s_key, e_key = f"C-EXON_{i}_start", f"C-EXON_{i}_end"
+                            if s_key in row_data and e_key in row_data:
                                 try:
-                                    exon_start = int(float(exon_start_str)) - 1
-                                    exon_end = int(float(exon_end_str))
-                                except ValueError:
-                                    continue
-                                
-                                if exon_end > 0:
-                                    bed_out.write(f"{contig}\t{exon_start}\t{exon_end}\n")
+                                    s, e = int(float(row_data[s_key])) - 1, int(float(row_data[e_key]))
+                                    if e > 0:
+                                        bed_out.write(f"{contig}\t{s}\t{e}\n")
+                                        total_positions += (e - s)
+                                        if min_start is None or s < min_start: min_start = s
+                                        if max_end is None or e > max_end: max_end = e
+                                except ValueError: pass
                     
-                    total_positions = 0
-                    min_start = None
-                    max_end = None
-                    try:
-                        with open(bed_file, 'r') as bed_in:
-                            for b_line in bed_in:
-                                parts = b_line.strip().split('\t')
-                                if len(parts) < 3: continue
-                                s = int(parts[1])
-                                e = int(parts[2])
-                                total_positions += (e - s)
-                                
-                                if min_start is None or s < min_start: min_start = s
-                                if max_end is None or e > max_end: max_end = e
-                    except Exception as e:
-                        print(f"[WARNING] Error reading bed file {bed_file}: {e}")
+                    if min_start is None:
                         csv_out.writerow([""] * 33)
                         continue
 
-                    if min_start is None or max_end is None:
-                        csv_out.writerow([""] * 33)
-                        continue
-
-                    region_start = min_start + 1
-                    region_end = max_end
-                    region_str = f"{contig}:{region_start}-{region_end}"
-
-                    tmp_bam = os.path.join(base_outd, gene_type, f"{contig_filename}_{region_start}_{region_end}.bam")
+                    region = f"{contig}:{min_start+1}-{max_end}"
+                    tmp_bam = os.path.join(base_outd, gene_type, f"{contig_filename}_{min_start+1}_{max_end}.bam")
                     try:
-                        safe_run([
-                            "samtools", "view",
-                            "-F", "0x100", "-F", "0x800",
-                            "-b", bam_file,
-                            "-o", tmp_bam,
-                            "-U", "/dev/null",
-                            region_str
-                        ])
+                        safe_run(["samtools", "view", "-F", "0x100", "-F", "0x800", "-b", bam_file, "-o", tmp_bam, "-U", "/dev/null", region])
                         safe_run(["samtools", "index", tmp_bam])
-                    except Exception:
-                        csv_out.writerow([""] * 33)
-                        continue
+                    except Exception: 
+                        csv_out.writerow([""] * 33); continue
 
-                    mpileup_cmd = [
-                        "samtools", "mpileup",
-                        "-f", ref,
-                        "-l", bed_file,
-                        tmp_bam
-                    ]
-                    result = safe_run(mpileup_cmd)
-                    
+                    result = safe_run(["samtools", "mpileup", "-f", ref, "-l", bed_file, tmp_bam])
                     output_fields = [""] * 33
-
                     if result and result.returncode == 0:
-                        mpileup_lines = result.stdout.strip().split('\n')
-                        (
-                            tpos, tot_reads, avg_cv, mism_pos, mat_pos,
-                            mism_str, mat_str,
-                            mism_lt10, mism_ge10, mat_lt10, mat_ge10,
-                            pos_10x, pct_acc
-                        ) = parse_mpileup_ighc(mpileup_lines, total_positions)
-
-                        match_cmd = [
-                            "/opt/wasp/conda/bin/python",
-                            "/opt/wasp/scripts/annotation/read-support/ighc_match3.py",
-                            tmp_bam, contig, gene, import_out
-                        ]
-                        match_res = safe_run(match_cmd)
-                        match_out = ""
-                        if match_res and match_res.returncode == 0:
-                            match_out = match_res.stdout.strip()
-
-                        output_fields = [
-                            tpos, tot_reads, avg_cv, mism_pos, mat_pos,
-                            mism_str, mat_str,
-                            mism_lt10, mism_ge10, mat_lt10, mat_ge10,
-                            pos_10x, pct_acc
-                        ]
-                        if match_out:
-                            output_fields.extend(match_out.split(','))
+                        lines = result.stdout.strip().split('\n')
+                        stats = parse_mpileup_ighc(lines, total_positions)
+                        output_fields = list(stats)
+                        
+                        seqs, exons = get_ighc_sequences_from_row(row_data)
+                        full, full_all, perf_matches, perf_spans = count_ighc_matches_internal(tmp_bam, contig, min_start+1, max_end, seqs, exons)
+                        
+                        output_fields.append(full)
+                        output_fields.append(full_all)
+                        output_fields.extend((perf_matches + [""] * 9)[:9])
+                        output_fields.extend((perf_spans + [""] * 9)[:9])
 
                     csv_out.writerow(output_fields)
-
-                    try:
-                        os.remove(tmp_bam)
-                        os.remove(tmp_bam + ".bai")
-                    except OSError:
-                        pass
-
-            combined_file = import_out.replace(".csv", "_combined.csv")
-            final_output = import_out.replace(".csv", "_with_read_support.csv")
-            try:
-                with open(import_out, 'r', newline='') as f1, \
-                     open(tmp_file, 'r', newline='') as f2, \
-                     open(combined_file, 'w', newline='') as fc:
-                    
-                    r1 = csv.reader(f1)
-                    r2 = csv.reader(f2)
-                    w = csv.writer(fc)
-                    
-                    for row1, row2 in zip(r1, r2):
-                        w.writerow(row1 + row2)
-            except Exception as e:
-                print(f"[WARNING] Failed merging IGHC {import_out} and {tmp_file}")
-                print(e)
-                continue
+                    try: os.remove(tmp_bam); os.remove(tmp_bam + ".bai")
+                    except OSError: pass
 
             try:
-                with open(combined_file, 'r', newline='') as f_in, \
-                     open(final_output, 'w', newline='') as f_out:
-                    
-                    r = csv.reader(f_in)
-                    w = csv.writer(f_out)
-                    
-                    first_line = True
-                    for row in r:
-                        if first_line:
-                            w.writerow(row)
-                            first_line = False
-                        else:
-                            if len(row) > 2:
-                                row[1] = sample
-                                row[2] = sample
-                            w.writerow(row)
-            except Exception as e:
-                print(f"[WARNING] Failed updating subject/sample columns in {combined_file}")
-                print(e)
-                continue
-
-            try:
-                os.remove(combined_file)
-                os.remove(tmp_file)
-            except OSError:
-                pass
+                df_orig = pd.read_csv(import_out)
+                df_new = pd.read_csv(tmp_file)
+                df_combined = pd.concat([df_orig, df_new], axis=1)
+                if 'subject' in df_combined.columns: df_combined['subject'] = sample
+                if 'sample_name' in df_combined.columns: df_combined['sample_name'] = sample
+                df_combined.to_csv(import_out.replace(".csv", "_with_read_support.csv"), index=False)
+            except Exception as e: print(f"[WARNING] IGHC Merge Failed: {e}")
+            try: os.remove(tmp_file)
+            except OSError: pass
 
 def main():
     if len(sys.argv) < 7:
-        print("Usage: python3 this_script.py <fofn> <reffn> <IG_loci> <threads> <scratch> <minimap_option>")
+        print("Usage: python3 script.py <fofn> <reffn> <IG_loci> <threads> <scratch> <minimap_option>")
         sys.exit(1)
-
-    fofn = sys.argv[1]
-    reffn = sys.argv[2]
-    IG_loci = sys.argv[3]
-    threads = sys.argv[4]
-    scratch = sys.argv[5]
-    minimap_option = sys.argv[6]
-
+    
+    fofn, reffn, IG_loci, threads, scratch, minimap_option = sys.argv[1:7]
     masked_ref = os.path.join(scratch, "ref_IG_masked.fasta")
-
+    
     run_make_ref_masked(reffn, IG_loci, scratch)
     run_map_ccs_to_pers(fofn, scratch, masked_ref, minimap_option, threads)
     run_append_pos(fofn, scratch)
     get_read_support_vdj3(fofn, scratch)
     get_read_support_ighc(fofn, scratch)
-
-    try:
-        os.remove(masked_ref)
-    except OSError:
-        pass
+    
+    try: os.remove(masked_ref)
+    except OSError: pass
 
 if __name__ == "__main__":
     main()

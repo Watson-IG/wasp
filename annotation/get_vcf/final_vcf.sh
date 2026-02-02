@@ -129,8 +129,7 @@ changeg="/opt/wasp/scripts/annotation/get_vcf/vcf_processing.py"
 anno_config_file="/opt/wasp/scripts/annotation/config.toml"
 vcfanno="vcfanno"
 bed_dir=$5
-clair_path="$6"
-ccs_bam_file="$7"
+ccs_bam_file="$6"
 
 # Add and index new read group
 samtools addreplacerg -r ID:"${sample}" -r SM:"${sample}" -o "${outd}/$sample/${sample}.editRG.bam" "${bam_file}"
@@ -138,4 +137,4 @@ samtools index "${outd}/$sample/${sample}.editRG.bam"
 
 # Run functions
 genotype_SV_regions "${outd}/$sample/${sample}.editRG.bam" "$SV_regions_1bp" "$sample"
-process_vcf "${outd}/$sample/${sample}.editRG.bam" "$sample" "$reffn" "$num_threads" "$SV_regions_entire" "$changeg" "$anno_config_file" "$vcfanno" "$bed_dir" "$clair_path" "$ccs_bam_file"
+process_vcf "${outd}/$sample/${sample}.editRG.bam" "$sample" "$reffn" "$num_threads" "$SV_regions_entire" "$changeg" "$anno_config_file" "$vcfanno" "$bed_dir" "$ccs_bam_file"

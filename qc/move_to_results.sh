@@ -2,6 +2,7 @@
 
 sample=$1
 orig_outdir=$2
+threads=$3
 outdir=$PWD/results/${sample}
 
 mkdir -p ${outdir}
@@ -99,4 +100,4 @@ ln -s ${outdir}/stats/${sample}_ccs_to_ref-based_regions-depth.bed.gz.csi ${orig
 mv ${orig_outdir}/${sample}_readLengthHistogram.png ${outdir}/stats/${sample}_readLengthHistogram.png
 ln -s ${outdir}/stats/${sample}_readLengthHistogram.png ${orig_outdir}/${sample}_readLengthHistogram.png
 
-gzip ${outdir}/reads/ccs-reads.fasta
+pigz -p "${threads}" ${outdir}/reads/ccs-reads.fasta
