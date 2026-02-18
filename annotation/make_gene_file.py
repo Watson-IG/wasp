@@ -269,19 +269,6 @@ def fetch_contigs(samfile, chrom, start, end, annotation_ranges, verbose, list_a
             if contigs[i].haplotype == '0':
                 del contigs[i]
 
-    # if there is at least one conting in a haplotype that has no Ds in the CIGAR, remove any contigs in that haplotype that do have Ds
-
-    for hap in ['0', '1', '2']:
-        clean_seen = False
-        for contig in contigs:
-            if contig.haplotype == hap and 'D' not in contig.annotations['allele_sequence_CIGAR']:
-                clean_seen = True
-                break
-        if clean_seen:
-            for i in range(len(contigs)-1, -1, -1):
-                if contigs[i].haplotype == hap and 'D' in contigs[i].annotations['allele_sequence_CIGAR']:
-                    del contigs[i]
-
     # dedupe unlesss we've been asked for everything
 
     dupes = {}
