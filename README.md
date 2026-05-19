@@ -35,3 +35,9 @@ Run the pipeline using Singularity with the following command:
    - `reads/`: Filtered contigs and CCS reads.
    - `stats/`: Assembly statistics and depth information.
    - `variants/`: Annotated VCF files.
+
+## Citation
+
+If this repository contributes to your work, particularly in the curation of immune loci genes and alleles (IG/TR) or in producing read-support for assembly validation or curated genes, please cite the following work:
+
+https://doi.org/10.5281/zenodo.20141874
