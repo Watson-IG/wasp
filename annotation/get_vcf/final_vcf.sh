@@ -47,8 +47,7 @@ function process_vcf {
     local anno_config_file="$7"
     local vcfanno="$8"
     local bed_dir="$9"
-    local clair_path="${10}"
-    local ccs_bam_file="${11}"
+    local ccs_bam_file="${10}"
     
     local sample_vcf_dir="${outd}/${sample}/vcfs"
     mkdir -p "$sample_vcf_dir"

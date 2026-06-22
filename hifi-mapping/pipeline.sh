@@ -33,7 +33,7 @@ import pysam
 import os
 
 # --- Settings ---
-MIN_IDENTITY = 99.0
+MIN_IDENTITY = 97.5
 MIN_COVERAGE = 0.90  # 90% of the flank length must align
 
 blast_file = sys.argv[1]
@@ -203,6 +203,7 @@ PYCODE
     # Filter to IG loci, fasta export
     bedtools intersect -abam "${out_bam}" -b "${bed_dir}/IG_loci.bed" > "${outdir}/${sample}.sorted.bam"
     samtools index "${outdir}/${sample}.sorted.bam"
+    samtools view ${outdir}/${sample}.sorted.bam | awk '{ print ">"$1"\n"$10 }' > ${outdir}/contigs.fasta
     
     # Removed BLAST/Split/Re-align logic here as it is now done upstream on Hifiasm output
 }
