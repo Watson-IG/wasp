@@ -31,6 +31,9 @@ ln -s ${outdir}/alignments/${sample}_ccs-to-ref.sorted.bam.bai ${orig_outdir}/cc
 mv ${orig_outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam ${outdir}/alignments/${sample}_ccs-to-personal-reference.sorted.bam
 ln -s ${outdir}/alignments/${sample}_ccs-to-personal-reference.sorted.bam ${orig_outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam
 
+mv ${orig_outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam.bai ${outdir}/alignments/${sample}_ccs-to-personal-reference.sorted.bam.bai
+ln -s ${outdir}/alignments/${sample}_ccs-to-personal-reference.sorted.bam.bai ${orig_outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam.bai
+
 #mv ${orig_outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam.bai ${outdir}/alignments/${sample}_ccs-to-personal-reference.sorted.bam.bai
 #ln -s ${outdir}/alignments/${sample}_ccs-to-personal-reference.sorted.bam.bai ${orig_outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam.bai
 
