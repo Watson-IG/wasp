@@ -86,7 +86,7 @@ changed = False
 with open(split_file, "w") as out:
     for ref in fa.references:
         seq = fa.fetch(ref)
-        length = contig_lens[ref]
+        length = int(contig_lens[ref])
 
         if ref not in targets:
             out.write(f">{ref}\n{seq}\n")
@@ -108,8 +108,9 @@ with open(split_file, "w") as out:
         
         # Part 3: Downstream
         if end_cut < length:
-            out.write(f">{ref}__{end_cut+1}_{length}\n{seq[end_cut:]}\n")
-            
+            #out.write(f">{ref}__{end_cut+1}_{length}\n{seq[end_cut:]}\n")
+            # switching the downstream pieces to get 4kb of 3-11 region
+            out.write(f">{ref}__{end_cut+1}_{length}\n{seq[end_cut-4000:]}\n")
         changed = True
 
 print("SPLIT" if changed else "NO_SPLIT")
