@@ -3,10 +3,22 @@
 sample=$1
 orig_outdir=$2
 threads=$3
+config_file=$4
 outdir=$PWD/results/${sample}
 
 mkdir -p ${outdir}
-mkdir -p ${outdir}/reads ${outdir}/alignments ${outdir}/variants ${outdir}/alleles ${outdir}/stats
+mkdir -p ${outdir}/reads ${outdir}/alignments ${outdir}/variants ${outdir}/alleles ${outdir}/stats ${outdir}/metadata
+
+# Moving metadata and config
+if [ -f "${orig_outdir}/container.yml" ]; then
+    mv ${orig_outdir}/container.yml ${outdir}/metadata/container.yml
+    ln -s ${outdir}/metadata/container.yml ${orig_outdir}/container.yml
+fi
+
+if [ ! -z "${config_file}" ] && [ -f "${orig_outdir}/${config_file}" ]; then
+    mv "${orig_outdir}/${config_file}" "${outdir}/metadata/${config_file}"
+    ln -s "${outdir}/metadata/${config_file}" "${orig_outdir}/${config_file}"
+fi
 
 # Moving and creating symlinks
 mv ${orig_outdir}/reads.fasta ${outdir}/reads/ccs-reads.fasta

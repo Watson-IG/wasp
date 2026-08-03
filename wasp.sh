@@ -28,7 +28,11 @@ else
 fi
 reads="${outdir}/reads.fasta"
 
-cp $CONFIG_FILE $outdir
+config_base=$(basename $CONFIG_FILE)
+cp $CONFIG_FILE $outdir/$config_base
+echo "INPUT_CCS=$(realpath $ccs)" >> $outdir/$config_base
+echo "INPUT_ASM=$(realpath $asm)" >> $outdir/$config_base
+echo "RUN_TIMESTAMP=$(date +'%Y-%m-%d %H:%M:%S')" >> $outdir/$config_base
 cp /opt/wasp/scripts/qc/container.yml $outdir
 bash /opt/wasp/scripts/annotation/create_fofn_from_asm.sh "${outdir}" "${sample}" "${ccs}" "${asm}"
 fofn="${outdir}/fofn.tsv"
@@ -42,7 +46,7 @@ samtools flagstat ${asm} > ${outdir}/merged_bam/final_asm20_to_ref_with_secondar
 bash /opt/wasp/scripts/annotation/get_vcf/final_vcf.sh ${sample} ${asm} ${reference_fasta} ${threads} ${annoconfig} ${bed_dir} "${outdir}/ccs_cov/ccs_to_ref.sorted.bam"
 #bash /opt/wasp/scripts/qc/perscov.sh "${sample}" "${outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam" "${asm}" "${bed_dir}/IG_loci.bed" "${outdir}"
 /opt/wasp/conda/bin/python /opt/wasp/scripts/qc/plotReadLengths.py ${outdir}/reads.fasta ${outdir}/${sample}_readLengthHistogram.png
-bash /opt/wasp/scripts/qc/move_to_results.sh "${sample}" "${outdir}" "${threads}"
+bash /opt/wasp/scripts/qc/move_to_results.sh "${sample}" "${outdir}" "${threads}" "${config_base}"
 #if [[ $stats == true ]]; then
 #    bash /opt/wasp/scripts/qc/move_statistics_to_results.sh "${sample}" "${outdir}"
 #fi
