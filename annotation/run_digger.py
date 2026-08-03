@@ -3,7 +3,8 @@
 run_digger.py
 
 Bins assembly contigs by IG/TR locus using BLAST against reference allele
-sequences, then runs the digger tool on each per-locus FASTA.
+sequences, then runs the digger tool on each per-locus FASTA, and adds
+read support to the digger annotation tables using wasptk.
 
 Workflow:
   1. Scan allele_ref_dir for reference FASTAs matching the species prefix
@@ -14,11 +15,15 @@ Workflow:
   5. Write per-locus FASTA files (e.g. IGH_contigs.fasta).
   6. Run digger on each per-locus FASTA, passing the appropriate
      species-specific V/D/J/C reference files.
+     - IGK is special: run digger in both + and - sense, then merge outputs.
+  7. Map CCS reads to per-locus contigs.
+  8. Run wasptk readsupport on each digger output CSV.
 """
 
 import argparse
 import glob
 import os
+import pandas as pd
 import re
 import subprocess
 import sys
@@ -189,63 +194,205 @@ def bin_contigs_by_locus(
     return locus_fastas
 
 
+def _build_digger_cmd(
+    fasta_path: str,
+    output_file: str,
+    refs: dict[str, str],
+    species: str,
+    locus: str,
+    sense: str | None = None,
+) -> list[str]:
+    """Build a digger command list."""
+    cmd = [
+        "digger",
+        fasta_path,
+        output_file,
+        "-species", species,
+    ]
+    if "V" in refs:
+        cmd.extend(["-v_ref", refs["V"]])
+    if "D" in refs:
+        cmd.extend(["-d_ref", refs["D"]])
+    if "J" in refs:
+        cmd.extend(["-j_ref", refs["J"]])
+    if "V_gapped" in refs:
+        cmd.extend(["-v_ref_gapped", refs["V_gapped"]])
+    cmd.extend(["-locus", locus])
+    if sense is not None:
+        cmd.extend(["-sense", sense])
+    return cmd
+
+
 def run_digger_per_locus(
     locus_fastas: dict[str, str],
     loci: dict[str, dict[str, str]],
     species: str,
     outdir: str,
-) -> None:
-    """Run digger on each per-locus FASTA file."""
+) -> dict[str, str]:
+    """Run digger on each per-locus FASTA file.
+
+    IGK is handled specially: digger is run in both + and - sense
+    (because IGK is inverted and duplicated) and the two output CSVs
+    are merged into a single table.
+
+    Returns a dict of locus -> path to the final digger output CSV.
+    """
     digger_outdir = os.path.join(outdir, "digger_results")
     os.makedirs(digger_outdir, exist_ok=True)
+
+    digger_outputs: dict[str, str] = {}
 
     for locus, fasta_path in locus_fastas.items():
         refs = loci[locus]
         locus_outdir = os.path.join(digger_outdir, locus)
         os.makedirs(locus_outdir, exist_ok=True)
 
-        output_file = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
+        if locus == "IGK":
+            # IGK is inverted and duplicated — run in both sense directions
+            output_fwd = os.path.join(locus_outdir, f"{locus}_digger_output_fwd.csv")
+            output_rev = os.path.join(locus_outdir, f"{locus}_digger_output_rev.csv")
+
+            cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+")
+            print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
+            subprocess.run(cmd_fwd, check=True)
+
+            cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-")
+            print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
+            subprocess.run(cmd_rev, check=True)
+
+            # Merge the two IGK outputs
+            merged_output = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
+            df_fwd = pd.read_csv(output_fwd)
+            df_rev = pd.read_csv(output_rev)
+            df_merged = pd.concat([df_fwd, df_rev], ignore_index=True)
+            df_merged.to_csv(merged_output, index=False)
+            print(f"Merged IGK forward/reverse digger outputs -> {merged_output}")
+            digger_outputs[locus] = merged_output
+        else:
+            output_file = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
+            cmd = _build_digger_cmd(fasta_path, output_file, refs, species, locus)
+            print(f"Running digger for locus {locus}: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True)
+            digger_outputs[locus] = output_file
+
+    return digger_outputs
+
+
+def map_reads_to_contigs(
+    reads_fasta: str,
+    contigs_fasta: str,
+    outdir: str,
+    minimap_option: str,
+    threads: int,
+) -> str:
+    """Map CCS reads to the assembly contigs using minimap2.
+
+    This mirrors the pers_to_ref mapping from get_read_support_VDJs.py:
+    the contigs FASTA acts as the reference, CCS reads are mapped to it.
+
+    Returns the path to the sorted, indexed BAM.
+    """
+    map_dir = os.path.join(outdir, "digger_read_support")
+    os.makedirs(map_dir, exist_ok=True)
+
+    sam_out = os.path.join(map_dir, "ccs_to_contigs.sam")
+    bam_out = os.path.join(map_dir, "ccs_to_contigs.bam")
+    sorted_bam = os.path.join(map_dir, "ccs_to_contigs.sorted.bam")
+
+    # Index the contigs FASTA
+    subprocess.run(["samtools", "faidx", contigs_fasta], check=True)
+
+    # Map reads
+    subprocess.run(
+        [
+            "minimap2", "-ax", minimap_option,
+            "--secondary=yes", "-t", str(threads), "-L",
+            contigs_fasta, reads_fasta,
+            "-o", sam_out,
+        ],
+        check=True,
+    )
+    subprocess.run(["samtools", "view", "-Sbh", sam_out, "-o", bam_out], check=True)
+    subprocess.run(
+        ["samtools", "sort", "-@", str(threads), bam_out, "-o", sorted_bam],
+        check=True,
+    )
+    subprocess.run(["samtools", "index", sorted_bam], check=True)
+
+    # Clean up intermediates
+    for f in [sam_out, bam_out]:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+    return sorted_bam
+
+
+def run_read_support(
+    digger_outputs: dict[str, str],
+    locus_fastas: dict[str, str],
+    sorted_bam: str,
+    outdir: str,
+) -> None:
+    """Run wasptk readsupport on each digger output CSV.
+
+    wasptk readsupport -f <reference.fa> <allele_annotation.csv> <mapped.bam> <output.csv>
+        --gene-col 'gene type' --start-col gene_start --end-col gene_end
+
+    The reference FASTA is the per-locus contigs FASTA (i.e. the assembly
+    contigs that digger annotated and that reads were mapped to).
+    """
+    rs_outdir = os.path.join(outdir, "digger_read_support")
+    os.makedirs(rs_outdir, exist_ok=True)
+
+    for locus, digger_csv in digger_outputs.items():
+        if locus not in locus_fastas:
+            print(f"[WARNING] No contigs FASTA for locus {locus}, skipping read support.")
+            continue
+
+        contigs_fasta = locus_fastas[locus]
+        output_csv = os.path.join(rs_outdir, f"{locus}_digger_read_support.csv")
 
         cmd = [
-            "digger",
-            fasta_path,
-            output_file,
-            "-species", species,
+            "wasptk", "readsupport",
+            "-f", contigs_fasta,
+            digger_csv,
+            sorted_bam,
+            output_csv,
+            "--gene-col", "gene type",
+            "--start-col", "gene_start",
+            "--end-col", "gene_end",
         ]
 
-        # Add reference file arguments if present
-        if "V" in refs:
-            cmd.extend(["-v_ref", refs["V"]])
-        if "D" in refs:
-            cmd.extend(["-d_ref", refs["D"]])
-        if "J" in refs:
-            cmd.extend(["-j_ref", refs["J"]])
-        if "V_gapped" in refs:
-            cmd.extend(["-v_ref_gapped", refs["V_gapped"]])
-
-        # Determine the locus flag for digger (e.g. IGH, IGK, IGL)
-        cmd.extend(["-locus", locus])
-
-        print(f"Running digger for locus {locus}: {' '.join(cmd)}")
+        print(f"Running wasptk readsupport for {locus}: {' '.join(cmd)}")
         subprocess.run(cmd, check=True)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bin assembly contigs by locus and run digger per locus."
+        description="Bin assembly contigs by locus, run digger per locus, and add read support."
     )
     parser.add_argument("outdir", help="Output directory (contains full_asm_for_digger.fasta)")
     parser.add_argument("-species", required=True, help="Species name matching reference file prefix (e.g. Homo_sapiens)")
     parser.add_argument("-allele_ref_dir", required=True, help="Directory containing species-prefixed allele reference FASTAs")
+    parser.add_argument("-reads", required=True, help="Path to CCS reads FASTA for read support mapping")
+    parser.add_argument("-minimap_option", default="map-hifi", help="Minimap2 preset (default: map-hifi)")
+    parser.add_argument("-threads", type=int, default=4, help="Number of threads for minimap2/samtools")
     args = parser.parse_args()
 
     outdir = args.outdir
     species = args.species
     allele_ref_dir = args.allele_ref_dir
+    reads_fasta = args.reads
+    minimap_option = args.minimap_option
+    threads = args.threads
     assembly_fasta = os.path.join(outdir, "full_asm_for_digger.fasta")
 
     if not os.path.isfile(assembly_fasta):
         sys.exit(f"ERROR: Assembly FASTA not found: {assembly_fasta}")
+    if not os.path.isfile(reads_fasta):
+        sys.exit(f"ERROR: Reads FASTA not found: {reads_fasta}")
 
     print(f"Discovering loci from {allele_ref_dir} for species {species}...")
     loci = discover_loci(allele_ref_dir, species)
@@ -262,7 +409,15 @@ def main():
     print(f"Binned contigs into {len(locus_fastas)} loci: {', '.join(sorted(locus_fastas.keys()))}")
 
     print("Running digger per locus...")
-    run_digger_per_locus(locus_fastas, loci, species, outdir)
+    digger_outputs = run_digger_per_locus(locus_fastas, loci, species, outdir)
+
+    print("Mapping CCS reads to assembly contigs...")
+    sorted_bam = map_reads_to_contigs(
+        reads_fasta, assembly_fasta, outdir, minimap_option, threads
+    )
+
+    print("Running wasptk readsupport per locus...")
+    run_read_support(digger_outputs, locus_fastas, sorted_bam, outdir)
 
     print("Done.")
 

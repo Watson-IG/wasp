@@ -60,6 +60,16 @@ for loci in "${loci_list[@]}"; do
           "${orig_outdir}/read_support/${sample}/imported_genes/${loci}/${sample}_make_gene_file_imported_with_read_support.csv"
 done
 
+# Move digger read support results (if they exist)
+if [ -d "${orig_outdir}/digger_read_support" ]; then
+    for rs_file in ${orig_outdir}/digger_read_support/*_digger_read_support.csv; do
+        [ -f "$rs_file" ] || continue
+        locus_name=$(basename "$rs_file" _digger_read_support.csv)
+        mv "$rs_file" "${outdir}/alleles/${sample}_${locus_name}_digger_annotated-alleles-with-read-support.csv"
+        ln -s "${outdir}/alleles/${sample}_${locus_name}_digger_annotated-alleles-with-read-support.csv" "$rs_file"
+    done
+fi
+
 
 
 # Move and link for the contigs-bcftools files

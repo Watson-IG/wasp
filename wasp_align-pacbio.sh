@@ -86,7 +86,7 @@ fi
 
 if [[ "$mode" == "denovo" || "$mode" == "combined" ]]; then
     cat ${outdir}/break_at_soft_clip/1_hifi_asm.fasta ${outdir}/break_at_soft_clip/2_hifi_asm.fasta > ${outdir}/full_asm_for_digger.fasta
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/run_digger.py -species "${species}" -allele_ref_dir "${allele_ref_dir}" "${outdir}"
+    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/run_digger.py -species "${species}" -allele_ref_dir "${allele_ref_dir}" -reads "${outdir}/reads.fasta" -minimap_option "${ccs_minimap_option}" -threads "${threads}" "${outdir}"
 fi
 /opt/wasp/conda/bin/python /opt/wasp/scripts/qc/get_asm_stats.py  ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm.stats
 samtools stats ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm-to-ref.stats
