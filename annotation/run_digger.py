@@ -82,7 +82,7 @@ def discover_loci(allele_ref_dir: str, species: str) -> dict[str, dict[str, str]
     return dict(loci)
 
 
-def build_blast_db(allele_ref_dir: str, species: str, outdir: str) -> str:
+def build_blast_db(loci_to_bin: dict[str, dict[str, str]], outdir: str) -> str:
     """Concatenate all non-gapped reference FASTAs and build a BLAST DB.
 
     Returns the path to the BLAST database.
@@ -91,16 +91,14 @@ def build_blast_db(allele_ref_dir: str, species: str, outdir: str) -> str:
     os.makedirs(db_dir, exist_ok=True)
 
     combined_fasta = os.path.join(db_dir, "combined_refs.fasta")
-    pattern = os.path.join(allele_ref_dir, f"{species}_*.fasta")
-    ref_files = sorted(
-        f for f in glob.glob(pattern) if "_gapped" not in os.path.basename(f)
-    )
 
     with open(combined_fasta, "w") as out_fh:
-        for ref_file in ref_files:
-            with open(ref_file) as in_fh:
-                for line in in_fh:
-                    out_fh.write(line)
+        for locus, refs in loci_to_bin.items():
+            for segment, ref_file in refs.items():
+                if "_gapped" not in segment:
+                    with open(ref_file) as in_fh:
+                        for line in in_fh:
+                            out_fh.write(line)
 
     db_path = os.path.join(db_dir, "combined_refs")
     subprocess.run(
@@ -132,7 +130,7 @@ def blast_contigs(assembly_fasta: str, db_path: str, outdir: str) -> str:
 
 
 def bin_contigs_by_locus(
-    blast_results: str, assembly_fasta: str, loci: dict, outdir: str
+    blast_results: str, assembly_fasta: str, loci_to_bin: dict, outdir: str
 ) -> dict[str, str]:
     """Parse BLAST results, assign each contig to a locus, write per-locus FASTAs.
 
@@ -141,7 +139,7 @@ def bin_contigs_by_locus(
     # Map each contig to its best-hit locus based on the subject ID.
     # Subject IDs come from the reference FASTAs and contain the locus name,
     # e.g. a hit to "IGHV1-2*01" means the contig belongs to IGH.
-    known_loci = set(loci.keys())
+    known_loci = set(loci_to_bin.keys())
 
     contig_to_locus: dict[str, str] = {}
     with open(blast_results) as fh:
@@ -379,6 +377,8 @@ def main():
     parser.add_argument("-reads", required=True, help="Path to CCS reads FASTA for read support mapping")
     parser.add_argument("-minimap_option", default="map-hifi", help="Minimap2 preset (default: map-hifi)")
     parser.add_argument("-threads", type=int, default=4, help="Number of threads for minimap2/samtools")
+    parser.add_argument("--locus_fasta", nargs="+", help="User-supplied contig fasta per locus. Format: LOCUS=FILE (e.g. IGH=path/to/igh.fasta)")
+    parser.add_argument("--no-blast", action="store_true", help="Skip BLAST and only run digger on user-supplied locus fastas")
     args = parser.parse_args()
 
     outdir = args.outdir
@@ -389,24 +389,46 @@ def main():
     threads = args.threads
     assembly_fasta = os.path.join(outdir, "full_asm_for_digger.fasta")
 
-    if not os.path.isfile(assembly_fasta):
-        sys.exit(f"ERROR: Assembly FASTA not found: {assembly_fasta}")
-    if not os.path.isfile(reads_fasta):
-        sys.exit(f"ERROR: Reads FASTA not found: {reads_fasta}")
+    user_fastas = {}
+    if args.locus_fasta:
+        for item in args.locus_fasta:
+            if "=" not in item:
+                sys.exit(f"ERROR: Invalid format for --locus_fasta: {item}. Expected LOCUS=FILE")
+            loc, path = item.split("=", 1)
+            if not os.path.isfile(path):
+                sys.exit(f"ERROR: User-supplied fasta not found: {path}")
+            user_fastas[loc] = path
 
     print(f"Discovering loci from {allele_ref_dir} for species {species}...")
     loci = discover_loci(allele_ref_dir, species)
     print(f"Found loci: {', '.join(sorted(loci.keys()))}")
 
-    print("Building BLAST database from reference sequences...")
-    db_path = build_blast_db(allele_ref_dir, species, outdir)
+    loci_to_bin = {k: v for k, v in loci.items() if k not in user_fastas}
+    locus_fastas = {}
 
-    print("BLASTing contigs against reference database...")
-    blast_results = blast_contigs(assembly_fasta, db_path, outdir)
+    if args.no_blast:
+        print("Skipping BLAST against assembly because --no-blast was specified.")
+        loci_to_bin = {}  # Empty it so the binning step is skipped
 
-    print("Binning contigs by locus...")
-    locus_fastas = bin_contigs_by_locus(blast_results, assembly_fasta, loci, outdir)
-    print(f"Binned contigs into {len(locus_fastas)} loci: {', '.join(sorted(locus_fastas.keys()))}")
+    if loci_to_bin:
+        if not os.path.isfile(assembly_fasta):
+            sys.exit(f"ERROR: Assembly FASTA not found: {assembly_fasta}")
+        print(f"Loci to bin from assembly: {', '.join(sorted(loci_to_bin.keys()))}")
+        print("Building BLAST database from reference sequences...")
+        db_path = build_blast_db(loci_to_bin, outdir)
+
+        print("BLASTing contigs against reference database...")
+        blast_results = blast_contigs(assembly_fasta, db_path, outdir)
+
+        print("Binning contigs by locus...")
+        locus_fastas = bin_contigs_by_locus(blast_results, assembly_fasta, loci_to_bin, outdir)
+        print(f"Binned contigs into {len(locus_fastas)} loci: {', '.join(sorted(locus_fastas.keys()))}")
+
+    # Add user supplied fastas
+    for loc, path in user_fastas.items():
+        if loc not in loci:
+            print(f"[WARNING] User provided fasta for {loc} but no references found for this locus.")
+        locus_fastas[loc] = path
 
     print("Running digger per locus...")
     digger_outputs = run_digger_per_locus(locus_fastas, loci, species, outdir)
