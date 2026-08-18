@@ -2,6 +2,25 @@ import os
 import argparse
 import concurrent.futures
 import subprocess
+import pandas as pd
+
+def _check_csv_output(csv_path, step_name, locus, loci):
+    """Check that a pipeline step produced a non-empty CSV (not just headers).
+
+    Prints a warning to stdout if the file is missing or headers-only.
+    """
+    label = f"{locus}/{loci}"
+    if not os.path.isfile(csv_path):
+        print(f"ANNOTATION_WARNING: {step_name} did not produce output file for {label}: {csv_path}")
+        return
+    try:
+        df = pd.read_csv(csv_path)
+        if len(df) == 0:
+            print(f"ANNOTATION_WARNING: {step_name} produced empty table (headers only) for {label}: {csv_path}")
+    except pd.errors.EmptyDataError:
+        print(f"ANNOTATION_WARNING: {step_name} produced completely empty file for {label}: {csv_path}")
+    except Exception as e:
+        print(f"ANNOTATION_WARNING: {step_name} output could not be read for {label}: {csv_path} ({e})")
 
 def process_locus(sample_id, bam_path, locus, loci, ref, bed_dir, allele_ref_dir, outdir):
     output_base_dir = outdir
@@ -16,11 +35,13 @@ def process_locus(sample_id, bam_path, locus, loci, ref, bed_dir, allele_ref_dir
     make_gene_file_output = f"{output_dir}/{sample_id}_make_gene_file.csv"
     make_command = f"/opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/make_gene_file.py -l --sample {sample_id} {locus} {loci} \"+-\" {bed_dir} {ref} {make_gene_file_output} -b {bam_path}"
     subprocess.run(make_command, shell=True, check=True)
+    _check_csv_output(make_gene_file_output, "make_gene_file", locus, loci)
 
     # Import from assembly
     import_from_assembly_output = f"{output_dir}/{sample_id}_make_gene_file_imported.csv"
     import_command = f"/opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/import_from_assemblies.py {locus} {loci} \"+-\" {make_gene_file_output} {ref} {bed_dir} {allele_ref_dir} {import_from_assembly_output}"
     subprocess.run(import_command, shell=True, check=True)
+    _check_csv_output(import_from_assembly_output, "import_from_assemblies", locus, loci)
     return import_from_assembly_output
 
 def process_sample(sample_id, bam_path, ref, bed_dir, allele_ref_dir, outdir):

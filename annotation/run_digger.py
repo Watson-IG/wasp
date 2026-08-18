@@ -134,14 +134,24 @@ def bin_contigs_by_locus(
 ) -> dict[str, str]:
     """Parse BLAST results, assign each contig to a locus, write per-locus FASTAs.
 
+    TRA and TRD are co-located (TRD is nested within TRA on chr14), so contigs
+    hitting either locus are assigned to both.
+
     Returns a dict of locus -> path to the per-locus contig FASTA.
     """
+    # Loci that share the same genomic region — contigs hitting one should
+    # also be binned into the other so digger can annotate genes from both.
+    COLOCATED_LOCI: dict[str, set[str]] = {
+        "TRA": {"TRD"},
+        "TRD": {"TRA"},
+    }
+
     # Map each contig to its best-hit locus based on the subject ID.
     # Subject IDs come from the reference FASTAs and contain the locus name,
     # e.g. a hit to "IGHV1-2*01" means the contig belongs to IGH.
     known_loci = set(loci_to_bin.keys())
 
-    contig_to_locus: dict[str, str] = {}
+    contig_to_loci: dict[str, set[str]] = defaultdict(set)
     with open(blast_results) as fh:
         for line in fh:
             fields = line.strip().split("\t")
@@ -153,7 +163,11 @@ def bin_contigs_by_locus(
             # e.g. "IGHV1-2*01", "IGKJ5*01", "TRAV1*01"
             for locus in known_loci:
                 if locus in sseqid:
-                    contig_to_locus[qseqid] = locus
+                    contig_to_loci[qseqid].add(locus)
+                    # Also assign to co-located loci (e.g. TRA <-> TRD)
+                    for partner in COLOCATED_LOCI.get(locus, set()):
+                        if partner in known_loci:
+                            contig_to_loci[qseqid].add(partner)
                     break
 
     # Read all contigs from the assembly FASTA
@@ -179,9 +193,10 @@ def bin_contigs_by_locus(
     locus_fastas: dict[str, str] = {}
     locus_contigs: dict[str, list[str]] = defaultdict(list)
 
-    for contig_id, locus in contig_to_locus.items():
+    for contig_id, loci_set in contig_to_loci.items():
         if contig_id in contigs:
-            locus_contigs[locus].append(contigs[contig_id])
+            for locus in loci_set:
+                locus_contigs[locus].append(contigs[contig_id])
 
     for locus, seqs in locus_contigs.items():
         fasta_path = os.path.join(binned_dir, f"{locus}_contigs.fasta")
@@ -221,6 +236,27 @@ def _build_digger_cmd(
     return cmd
 
 
+def _check_digger_output(csv_path: str, locus: str, sense: str | None = None) -> bool:
+    """Check if a digger output CSV has any data rows beyond the header.
+
+    Digger can exit 0 but produce a headers-only file. This catches that.
+    Returns True if the table has data rows, False otherwise.
+    """
+    sense_label = f" (sense {sense})" if sense else ""
+    if not os.path.isfile(csv_path):
+        print(f"DIGGER_WARNING: {locus}{sense_label} output file not found: {csv_path}")
+        return False
+    try:
+        df = pd.read_csv(csv_path)
+        if len(df) == 0:
+            print(f"DIGGER_WARNING: {locus}{sense_label} produced empty table (headers only): {csv_path}")
+            return False
+    except pd.errors.EmptyDataError:
+        print(f"DIGGER_WARNING: {locus}{sense_label} produced completely empty file: {csv_path}")
+        return False
+    return True
+
+
 def run_digger_per_locus(
     locus_fastas: dict[str, str],
     loci: dict[str, dict[str, str]],
@@ -253,10 +289,12 @@ def run_digger_per_locus(
             cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+")
             print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
             subprocess.run(cmd_fwd, check=True)
+            _check_digger_output(output_fwd, locus, sense="+")
 
             cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-")
             print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
             subprocess.run(cmd_rev, check=True)
+            _check_digger_output(output_rev, locus, sense="-")
 
             # Merge the two IGK outputs
             merged_output = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
@@ -271,6 +309,7 @@ def run_digger_per_locus(
             cmd = _build_digger_cmd(fasta_path, output_file, refs, species, locus)
             print(f"Running digger for locus {locus}: {' '.join(cmd)}")
             subprocess.run(cmd, check=True)
+            _check_digger_output(output_file, locus)
             digger_outputs[locus] = output_file
 
     return digger_outputs
@@ -423,6 +462,14 @@ def main():
         print("Binning contigs by locus...")
         locus_fastas = bin_contigs_by_locus(blast_results, assembly_fasta, loci_to_bin, outdir)
         print(f"Binned contigs into {len(locus_fastas)} loci: {', '.join(sorted(locus_fastas.keys()))}")
+
+        # Warn about discovered loci that got zero contigs assigned
+        missing_loci = set(loci_to_bin.keys()) - set(locus_fastas.keys())
+        if missing_loci:
+            for ml in sorted(missing_loci):
+                print(f"BINNING_WARNING: No contigs were assigned to locus {ml}")
+        if not locus_fastas:
+            print("BLAST_WARNING: BLAST produced hits but no contigs could be assigned to any locus")
 
     # Add user supplied fastas
     for loc, path in user_fastas.items():

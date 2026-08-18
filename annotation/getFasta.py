@@ -5,7 +5,7 @@ import glob
 import gzip
 import concurrent.futures
 
-def process_file(directory, pattern, fasta_output):
+def process_file(directory, pattern, fasta_output, name_col, seq_col, filter_fn):
     pattern_path = os.path.join(directory, pattern)
     matching_files = glob.glob(pattern_path)
     
@@ -26,7 +26,31 @@ def process_file(directory, pattern, fasta_output):
         print(f"Error reading {input_path}: {e}")
         return
     
+    # Check required columns exist
+    if name_col not in df.columns or seq_col not in df.columns:
+        print(f"Warning: Required columns ('{name_col}', '{seq_col}') not found in {input_path}. Skipping.")
+        return
+    
     # Apply filtering
+    filtered = filter_fn(df)
+    
+    # Remove duplicates
+    unique_entries = filtered.drop_duplicates(subset=[name_col, seq_col])
+    
+    # Write FASTA file as gzip
+    try:
+        with gzip.open(fasta_output_path, "wt") as fasta:
+            for _, row in unique_entries.iterrows():
+                fasta.write(f">{row[name_col]}\n{row[seq_col]}\n")
+    except Exception as e:
+        print(f"Error writing {fasta_output_path}: {e}")
+        return
+    
+    print(f"Processed {os.path.basename(input_path)} -> {fasta_output}")
+
+
+def ref_filter(df):
+    """Filter for reference-guided and combined allele tables."""
     is_c_gene = df["vdjbase_allele"].str[3] == "C"
     c_filter = df["Average_Coverage"] >= 30
     non_c_filter = (
@@ -34,21 +58,61 @@ def process_file(directory, pattern, fasta_output):
         (df["Fully_Spanning_Reads_100%_Match"] >= 10)
     )
     combined_filter = (is_c_gene & c_filter) | (~is_c_gene & non_c_filter)
-    filtered = df[combined_filter]
-    
-    # Remove duplicates
-    unique_entries = filtered.drop_duplicates(subset=["vdjbase_allele", "gene_sequence"])
-    
-    # Write FASTA file as gzip
-    try:
-        with gzip.open(fasta_output_path, "wt") as fasta:
-            for _, row in unique_entries.iterrows():
-                fasta.write(f">{row['vdjbase_allele']}\n{row['gene_sequence']}\n")
-    except Exception as e:
-        print(f"Error writing {fasta_output_path}: {e}")
-        return
-    
-    print(f"Processed {os.path.basename(input_path)} -> {fasta_output}")
+    return df[combined_filter]
+
+
+def digger_filter(df):
+    """Filter for digger allele tables (no coverage filtering for now)."""
+    return df.dropna(subset=["gene type", "seq"])
+
+
+# Mode-specific configuration: (file pattern suffix, output suffix, name_col, seq_col, filter_fn)
+MODE_CONFIG = {
+    "ref": {
+        "name_col": "vdjbase_allele",
+        "seq_col": "gene_sequence",
+        "filter_fn": ref_filter,
+        "loci": [
+            ("*_IGHC_annotated-alles-with-read-support.csv", "IGHC_alleles.fasta.gz"),
+            ("*_TRA_annotated-alles-with-read-support.csv",  "TRA_alleles.fasta.gz"),
+            ("*_IGH_annotated-alles-with-read-support.csv",  "IGH_alleles.fasta.gz"),
+            ("*_TRB_annotated-alles-with-read-support.csv",  "TRB_alleles.fasta.gz"),
+            ("*_IGK_annotated-alles-with-read-support.csv",  "IGK_alleles.fasta.gz"),
+            ("*_TRD_annotated-alles-with-read-support.csv",  "TRD_alleles.fasta.gz"),
+            ("*_IGL_annotated-alles-with-read-support.csv",  "IGL_alleles.fasta.gz"),
+            ("*_TRG_annotated-alles-with-read-support.csv",  "TRG_alleles.fasta.gz"),
+        ],
+    },
+    "digger": {
+        "name_col": "gene type",
+        "seq_col": "seq",
+        "filter_fn": digger_filter,
+        "loci": [
+            ("*_IGH_digger_annotated-alleles-with-read-support.csv", "IGH_alleles.fasta.gz"),
+            ("*_IGK_digger_annotated-alleles-with-read-support.csv", "IGK_alleles.fasta.gz"),
+            ("*_IGL_digger_annotated-alleles-with-read-support.csv", "IGL_alleles.fasta.gz"),
+            ("*_TRA_digger_annotated-alleles-with-read-support.csv", "TRA_alleles.fasta.gz"),
+            ("*_TRB_digger_annotated-alleles-with-read-support.csv", "TRB_alleles.fasta.gz"),
+            ("*_TRD_digger_annotated-alleles-with-read-support.csv", "TRD_alleles.fasta.gz"),
+            ("*_TRG_digger_annotated-alleles-with-read-support.csv", "TRG_alleles.fasta.gz"),
+        ],
+    },
+    "combined": {
+        "name_col": "vdjbase_allele",
+        "seq_col": "gene_sequence",
+        "filter_fn": ref_filter,
+        "loci": [
+            ("*_IGH_combined_alleles.csv", "IGH_alleles.fasta.gz"),
+            ("*_IGK_combined_alleles.csv", "IGK_alleles.fasta.gz"),
+            ("*_IGL_combined_alleles.csv", "IGL_alleles.fasta.gz"),
+            ("*_TRA_combined_alleles.csv", "TRA_alleles.fasta.gz"),
+            ("*_TRB_combined_alleles.csv", "TRB_alleles.fasta.gz"),
+            ("*_TRD_combined_alleles.csv", "TRD_alleles.fasta.gz"),
+            ("*_TRG_combined_alleles.csv", "TRG_alleles.fasta.gz"),
+        ],
+    },
+}
+
 
 def main():
     # Set up argument parser
@@ -61,26 +125,30 @@ def main():
         default='.', 
         help='Directory containing input CSV files (default: current directory)'
     )
+    parser.add_argument(
+        '--mode',
+        type=str,
+        choices=['ref', 'digger', 'combined', 'denovo'],
+        default='ref',
+        help='Pipeline mode: ref, digger/denovo, or combined (default: ref)'
+    )
     args = parser.parse_args()
-    
-    # Define input file patterns and corresponding gzip FASTA output files
-    files_info = [
-        ("*_IGHC_annotated-alles-with-read-support.csv", "IGHC_alleles.fasta.gz"),
-        ("*_TRA_annotated-alles-with-read-support.csv", "TRA_alleles.fasta.gz"),
-        ("*_IGH_annotated-alles-with-read-support.csv", "IGH_alleles.fasta.gz"),
-        ("*_TRB_annotated-alles-with-read-support.csv", "TRB_alleles.fasta.gz"),
-        ("*_IGK_annotated-alles-with-read-support.csv", "IGK_alleles.fasta.gz"),
-        ("*_TRD_annotated-alles-with-read-support.csv", "TRD_alleles.fasta.gz"),
-        ("*_IGL_annotated-alles-with-read-support.csv", "IGL_alleles.fasta.gz"),
-        ("*_TRG_annotated-alles-with-read-support.csv", "TRG_alleles.fasta.gz")
-    ]
+
+    # Map 'denovo' to 'digger' since they use the same files
+    mode = 'digger' if args.mode == 'denovo' else args.mode
+
+    config = MODE_CONFIG[mode]
+    name_col = config["name_col"]
+    seq_col = config["seq_col"]
+    filter_fn = config["filter_fn"]
+    files_info = config["loci"]
     
     # Use ThreadPoolExecutor to process files concurrently
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for pattern, fasta_output in files_info:
             futures.append(
-                executor.submit(process_file, args.directory, pattern, fasta_output)
+                executor.submit(process_file, args.directory, pattern, fasta_output, name_col, seq_col, filter_fn)
             )
         # Wait for all threads to complete
         concurrent.futures.wait(futures)

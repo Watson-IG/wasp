@@ -21,7 +21,7 @@ This toolset facilitates the alignment and processing of immune receptor genomic
 
 Run the pipeline using Singularity with the following command:
 
-    singularity exec --bind /home:/home ${container_path} /opt/wasp/scripts/wasp_align-pacbio.sh ${CONFIG_FILE} ${sample} ${ccs}
+    singularity exec --bind /home:/home ${container_path} /opt/wasp/scripts/wasp_align-pacbio.sh -f ${CONFIG_FILE} -s ${sample} -r ${ccs}
 
 ## Output
 

@@ -38,6 +38,14 @@ function map_ccs_to_ref {
 
     on_target=$(awk 'NR==1 {print $1}' "${outdir}/ig-filtered_ccs_to_ref.flagstats.txt")
     full=$(awk 'NR==1 {print $1}' "${outdir}/ccs_to_ref-full.flagstats.txt")
+
+    # Sanity check: verify reads actually mapped
+    if [ "$full" -eq 0 ] 2>/dev/null; then
+        echo "ALIGNMENT_WARNING: 0 reads in CCS-to-reference BAM — minimap2 may have failed or input reads are empty"
+    elif [ "$on_target" -eq 0 ] 2>/dev/null; then
+        echo "ALIGNMENT_WARNING: 0 reads mapped to IG loci — check that the BED file and reference match"
+    fi
+
     percent_on=$(awk -v a="$on_target" -v b="$full" 'BEGIN { printf "%.2f", (100 * a / b) }')
     echo "$percent_on" > "${outdir}/percent_on_target.txt"
 
