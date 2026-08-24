@@ -35,7 +35,7 @@ if [ ! -z "${config_file}" ] && [ -f "${orig_outdir}/${config_file}" ]; then
 fi
 
 # Moving and creating symlinks
-safe_mv_link "${orig_outdir}/reads.fasta" "${outdir}/reads/ccs-reads.fasta"
+#safe_mv_link "${orig_outdir}/reads.fasta" "${outdir}/reads/ccs-reads.fasta"
 
 safe_mv_link "${orig_outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta" "${outdir}/reads/hifiasm_ig-filtered_contigs.fasta"
 
@@ -56,7 +56,7 @@ loci_list=("IGH" "IGHC" "IGK" "IGL" "TRA" "TRB" "TRD" "TRG")
 
 for loci in "${loci_list[@]}"; do
     src="${orig_outdir}/read_support/${sample}/imported_genes/${loci}/${sample}_make_gene_file_imported_with_read_support.csv"
-    dst="${outdir}/alleles/${sample}_${loci}_annotated-alles-with-read-support.csv"
+    dst="${outdir}/alleles/${sample}_${loci}_reference_annotated-alleles.csv"
     safe_mv_link "$src" "$dst"
 done
 
@@ -65,8 +65,8 @@ if [ -d "${orig_outdir}/digger_read_support" ]; then
     for rs_file in ${orig_outdir}/digger_read_support/*_digger_read_support.csv; do
         [ -f "$rs_file" ] || continue
         locus_name=$(basename "$rs_file" _digger_read_support.csv)
-        mv "$rs_file" "${outdir}/alleles/${sample}_${locus_name}_digger_annotated-alleles-with-read-support.csv"
-        ln -s "${outdir}/alleles/${sample}_${locus_name}_digger_annotated-alleles-with-read-support.csv" "$rs_file"
+        dst="${outdir}/alleles/${sample}_${locus_name}_digger_annotated-alleles.csv"
+        safe_mv_link "$rs_file" "$dst"
     done
 fi
 
@@ -74,9 +74,10 @@ fi
 if [[ "$mode" == "combined" ]] && [ -d "${orig_outdir}/combined_alleles" ]; then
     for combined_file in ${orig_outdir}/combined_alleles/*_combined_alleles.csv; do
         [ -f "$combined_file" ] || continue
-        fname=$(basename "$combined_file")
-        mv "$combined_file" "${outdir}/alleles/${fname}"
-        ln -s "${outdir}/alleles/${fname}" "$combined_file"
+        fname=$(basename "$combined_file" _combined_alleles.csv)
+        locus_name=${fname#"${sample}_"}
+        dst="${outdir}/alleles/${sample}_${locus_name}_combined_annotated-alleles.csv"
+        safe_mv_link "$combined_file" "$dst"
     done
 fi
 
@@ -121,4 +122,4 @@ safe_mv_link "${orig_outdir}/ccs_cov/${sample}.regions.bed.gz.csi" "${outdir}/st
 
 safe_mv_link "${orig_outdir}/${sample}_readLengthHistogram.png" "${outdir}/stats/${sample}_readLengthHistogram.png"
 
-pigz -p "${threads}" ${outdir}/reads/ccs-reads.fasta
+#pigz -p "${threads}" ${outdir}/reads/ccs-reads.fasta

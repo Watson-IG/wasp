@@ -216,11 +216,18 @@ def _build_digger_cmd(
     sense: str | None = None,
 ) -> list[str]:
     """Build a digger command list."""
+    # Map binomial species names used for references to digger's internal motif folder names
+    digger_species = species.lower()
+    if digger_species == "homo_sapiens":
+        digger_species = "human"
+    elif digger_species == "macaca_mulatta":
+        digger_species = "rhesus_macaque"
+
     cmd = [
         "digger",
         fasta_path,
         output_file,
-        "-species", species,
+        "-species", digger_species,
     ]
     if "V" in refs:
         cmd.extend(["-v_ref", refs["V"]])
@@ -281,36 +288,39 @@ def run_digger_per_locus(
         locus_outdir = os.path.join(digger_outdir, locus)
         os.makedirs(locus_outdir, exist_ok=True)
 
-        if locus == "IGK":
-            # IGK is inverted and duplicated — run in both sense directions
-            output_fwd = os.path.join(locus_outdir, f"{locus}_digger_output_fwd.csv")
-            output_rev = os.path.join(locus_outdir, f"{locus}_digger_output_rev.csv")
+        try:
+            if locus == "IGK":
+                # IGK is inverted and duplicated — run in both sense directions
+                output_fwd = os.path.join(locus_outdir, f"{locus}_digger_output_fwd.csv")
+                output_rev = os.path.join(locus_outdir, f"{locus}_digger_output_rev.csv")
 
-            cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+")
-            print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
-            subprocess.run(cmd_fwd, check=True)
-            _check_digger_output(output_fwd, locus, sense="+")
+                cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+")
+                print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
+                subprocess.run(cmd_fwd, check=True, cwd=locus_outdir)
+                _check_digger_output(output_fwd, locus, sense="+")
 
-            cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-")
-            print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
-            subprocess.run(cmd_rev, check=True)
-            _check_digger_output(output_rev, locus, sense="-")
+                cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-")
+                print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
+                subprocess.run(cmd_rev, check=True, cwd=locus_outdir)
+                _check_digger_output(output_rev, locus, sense="-")
 
-            # Merge the two IGK outputs
-            merged_output = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
-            df_fwd = pd.read_csv(output_fwd)
-            df_rev = pd.read_csv(output_rev)
-            df_merged = pd.concat([df_fwd, df_rev], ignore_index=True)
-            df_merged.to_csv(merged_output, index=False)
-            print(f"Merged IGK forward/reverse digger outputs -> {merged_output}")
-            digger_outputs[locus] = merged_output
-        else:
-            output_file = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
-            cmd = _build_digger_cmd(fasta_path, output_file, refs, species, locus)
-            print(f"Running digger for locus {locus}: {' '.join(cmd)}")
-            subprocess.run(cmd, check=True)
-            _check_digger_output(output_file, locus)
-            digger_outputs[locus] = output_file
+                # Merge the two IGK outputs
+                merged_output = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
+                df_fwd = pd.read_csv(output_fwd)
+                df_rev = pd.read_csv(output_rev)
+                df_merged = pd.concat([df_fwd, df_rev], ignore_index=True)
+                df_merged.to_csv(merged_output, index=False)
+                print(f"Merged IGK forward/reverse digger outputs -> {merged_output}")
+                digger_outputs[locus] = merged_output
+            else:
+                output_file = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
+                cmd = _build_digger_cmd(fasta_path, output_file, refs, species, locus)
+                print(f"Running digger for locus {locus}: {' '.join(cmd)}")
+                subprocess.run(cmd, check=True, cwd=locus_outdir)
+                _check_digger_output(output_file, locus)
+                digger_outputs[locus] = output_file
+        except Exception as e:
+            print(f"[WARNING] Processing failed for locus {locus}. Error: {e}")
 
     return digger_outputs
 
@@ -420,10 +430,10 @@ def main():
     parser.add_argument("--no-blast", action="store_true", help="Skip BLAST and only run digger on user-supplied locus fastas")
     args = parser.parse_args()
 
-    outdir = args.outdir
+    outdir = os.path.abspath(args.outdir)
     species = args.species
-    allele_ref_dir = args.allele_ref_dir
-    reads_fasta = args.reads
+    allele_ref_dir = os.path.abspath(args.allele_ref_dir)
+    reads_fasta = os.path.abspath(args.reads)
     minimap_option = args.minimap_option
     threads = args.threads
     assembly_fasta = os.path.join(outdir, "full_asm_for_digger.fasta")
@@ -436,7 +446,7 @@ def main():
             loc, path = item.split("=", 1)
             if not os.path.isfile(path):
                 sys.exit(f"ERROR: User-supplied fasta not found: {path}")
-            user_fastas[loc] = path
+            user_fastas[loc] = os.path.abspath(path)
 
     print(f"Discovering loci from {allele_ref_dir} for species {species}...")
     loci = discover_loci(allele_ref_dir, species)
