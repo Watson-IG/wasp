@@ -27,7 +27,7 @@ import pandas as pd
 import re
 import subprocess
 import sys
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 
 def discover_loci(allele_ref_dir: str, species: str) -> dict[str, dict[str, str]]:
@@ -119,9 +119,9 @@ def blast_contigs(assembly_fasta: str, db_path: str, outdir: str) -> str:
             "blastn",
             "-query", assembly_fasta,
             "-db", db_path,
-            "-outfmt", "6 qseqid sseqid pident length evalue bitscore",
+            "-outfmt", "6 qseqid sseqid pident length evalue bitscore slen",
             "-evalue", "1e-5",
-            "-max_target_seqs", "1",
+            "-max_target_seqs", "20",
             "-out", blast_out,
         ],
         check=True,
@@ -151,24 +151,51 @@ def bin_contigs_by_locus(
     # e.g. a hit to "IGHV1-2*01" means the contig belongs to IGH.
     known_loci = set(loci_to_bin.keys())
 
-    contig_to_loci: dict[str, set[str]] = defaultdict(set)
+    # Map each contig to a list of locus hits
+    contig_hits: dict[str, list[str]] = defaultdict(list)
     with open(blast_results) as fh:
         for line in fh:
             fields = line.strip().split("\t")
-            if len(fields) < 2:
+            if len(fields) < 7:
                 continue
+            
             qseqid, sseqid = fields[0], fields[1]
+            length = int(fields[3])
+            slen = int(fields[6])
+            
+            if length < 0.95 * slen:
+                continue
+
             # Try to extract the locus prefix from the subject sequence ID.
             # Reference sequence names typically start with the locus,
             # e.g. "IGHV1-2*01", "IGKJ5*01", "TRAV1*01"
             for locus in known_loci:
                 if locus in sseqid:
-                    contig_to_loci[qseqid].add(locus)
-                    # Also assign to co-located loci (e.g. TRA <-> TRD)
-                    for partner in COLOCATED_LOCI.get(locus, set()):
-                        if partner in known_loci:
-                            contig_to_loci[qseqid].add(partner)
+                    contig_hits[qseqid].append(locus)
                     break
+
+    contig_to_loci: dict[str, set[str]] = defaultdict(set)
+    for qseqid, hits in contig_hits.items():
+        if not hits:
+            continue
+        
+        hit_counts = Counter(hits)
+        total_hits = len(hits)
+        top_locus, top_count = hit_counts.most_common(1)[0]
+        
+        # If one locus constitutes more than 80% of the valid hits, assign only to that locus.
+        # Otherwise, assign to all loci that were hit.
+        if (top_count / total_hits) > 0.80:
+            assigned_loci = {top_locus}
+        else:
+            assigned_loci = set(hits)
+            
+        for locus in assigned_loci:
+            contig_to_loci[qseqid].add(locus)
+            # Also assign to co-located loci (e.g. TRA <-> TRD)
+            for partner in COLOCATED_LOCI.get(locus, set()):
+                if partner in known_loci:
+                    contig_to_loci[qseqid].add(partner)
 
     # Read all contigs from the assembly FASTA
     contigs: dict[str, str] = {}
@@ -214,6 +241,7 @@ def _build_digger_cmd(
     species: str,
     locus: str,
     sense: str | None = None,
+    motif_dir: str | None = None,
 ) -> list[str]:
     """Build a digger command list."""
     # Map binomial species names used for references to digger's internal motif folder names
@@ -240,6 +268,8 @@ def _build_digger_cmd(
     cmd.extend(["-locus", locus])
     if sense is not None:
         cmd.extend(["-sense", sense])
+    if motif_dir:
+        cmd.extend(["-motif_dir", motif_dir])
     return cmd
 
 
@@ -269,6 +299,7 @@ def run_digger_per_locus(
     loci: dict[str, dict[str, str]],
     species: str,
     outdir: str,
+    motif_dir: str | None = None,
 ) -> dict[str, str]:
     """Run digger on each per-locus FASTA file.
 
@@ -294,12 +325,12 @@ def run_digger_per_locus(
                 output_fwd = os.path.join(locus_outdir, f"{locus}_digger_output_fwd.csv")
                 output_rev = os.path.join(locus_outdir, f"{locus}_digger_output_rev.csv")
 
-                cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+")
+                cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+", motif_dir=motif_dir)
                 print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
                 subprocess.run(cmd_fwd, check=True, cwd=locus_outdir)
                 _check_digger_output(output_fwd, locus, sense="+")
 
-                cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-")
+                cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-", motif_dir=motif_dir)
                 print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
                 subprocess.run(cmd_rev, check=True, cwd=locus_outdir)
                 _check_digger_output(output_rev, locus, sense="-")
@@ -314,7 +345,7 @@ def run_digger_per_locus(
                 digger_outputs[locus] = merged_output
             else:
                 output_file = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
-                cmd = _build_digger_cmd(fasta_path, output_file, refs, species, locus)
+                cmd = _build_digger_cmd(fasta_path, output_file, refs, species, locus, motif_dir=motif_dir)
                 print(f"Running digger for locus {locus}: {' '.join(cmd)}")
                 subprocess.run(cmd, check=True, cwd=locus_outdir)
                 _check_digger_output(output_file, locus)
@@ -408,8 +439,8 @@ def run_read_support(
             sorted_bam,
             output_csv,
             "--gene-col", "gene type",
-            "--start-col", "gene_start",
-            "--end-col", "gene_end",
+            "--start-col", "start",
+            "--end-col", "end",
         ]
 
         print(f"Running wasptk readsupport for {locus}: {' '.join(cmd)}")
@@ -428,6 +459,7 @@ def main():
     parser.add_argument("-threads", type=int, default=4, help="Number of threads for minimap2/samtools")
     parser.add_argument("--locus_fasta", nargs="+", help="User-supplied contig fasta per locus. Format: LOCUS=FILE (e.g. IGH=path/to/igh.fasta)")
     parser.add_argument("--no-blast", action="store_true", help="Skip BLAST and only run digger on user-supplied locus fastas")
+    parser.add_argument("-motif_dir", default=None, help="Path to motif directory for unsupported species")
     args = parser.parse_args()
 
     outdir = os.path.abspath(args.outdir)
@@ -488,7 +520,7 @@ def main():
         locus_fastas[loc] = path
 
     print("Running digger per locus...")
-    digger_outputs = run_digger_per_locus(locus_fastas, loci, species, outdir)
+    digger_outputs = run_digger_per_locus(locus_fastas, loci, species, outdir, motif_dir=args.motif_dir)
 
     print("Mapping CCS reads to assembly contigs...")
     sorted_bam = map_reads_to_contigs(
