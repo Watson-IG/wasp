@@ -9,11 +9,8 @@ WASP is a containerized pipeline designed to process, assemble, and annotate Pac
 ## Prerequisites
 
 1. **Allele Directory** (`allele_dir`):  
-   - A directory containing reference FASTA files required for importing closest allele matches.  
-   - Suggestions include:  
-     - [Reference FASTA](http://immunogenomics.louisville.edu/immune_receptor_genomics/current/reference.fasta)  
-     - [Reference FASTA (tar.gz)](http://immunogenomics.louisville.edu/wasp/ref.tar.gz)  
-   - Details on a sample reference setup can be found in this [GitHub Repository](https://github.com/Watson-IG/immune_receptor_genomics/tree/main).
+   - A directory containing reference FASTA files of V/D/J alleles, required for annotating the closest allele matches.  
+   - A curated reference set can be found in this [GitHub Repository](https://github.com/Watson-IG/immune_receptor_genomics/tree/main).
 
 2. **Container**:  
    - A WASP Singularity container image (SIF) is required to run the pipeline. 
@@ -47,7 +44,7 @@ If you already have assembled contigs and want to skip the built-in `hifiasm` as
 ### Additional Options
 - `--species` : Species name (default: `Homo_sapiens`).
 - `--motif_dir` : Optional path to a custom digger motif directory (useful for unsupported species).
-- `--cut [int]` : Trim contigs that extend beyond IG/TR loci boundaries. Optionally specify a buffer distance in bp (default: 20000).
+- `--cut [int]` : Optional. Trims contigs down to just the IG/TR loci regions using a reference-independent BLAST search against the allele database. You must specify a buffer distance in bp to keep around the locus (e.g., `--cut 20000`). If a contig spans multiple loci, it will be accurately split into locus-specific sub-contigs.
 
 ## Output
 
@@ -62,8 +59,8 @@ If you already have assembled contigs and want to skip the built-in `hifiasm` as
    - `stats/`: Assembly statistics and depth information.
    - `variants/`: Annotated VCF files.
 
-## Citation
+## Watson Lab Human Reference
 
-If this repository contributes to your work, particularly in the curation of immune loci genes and alleles (IG/TR) or in producing read-support for assembly validation or curated genes, please cite the following work:
+If you need a reliable human reference FASTA for downstream analysis or mapping outside of the core WASP allele annotation:
+- [Watson Lab Human Reference FASTA](http://immunogenomics.louisville.edu/immune_receptor_genomics/current/reference.fasta)
 
-https://doi.org/10.5281/zenodo.20141874

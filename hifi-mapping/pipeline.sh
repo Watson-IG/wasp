@@ -9,6 +9,7 @@ reffn=$5
 minimap_option=$6
 bed_dir=$7
 cut_distance=$8
+allele_ref_dir=$9
 
 # --- NEW FUNCTION: BLAST and Split Contigs ---
 function split_assembly_contigs {
@@ -298,6 +299,18 @@ do
             ${bam} > ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
 
         samtools faidx ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
+        
+        if [[ -n "$cut_distance" ]]; then
+            echo "Running BLAST-based contig trimming with buffer=${cut_distance}bp on haplotype ${i}..."
+            python /opt/wasp/scripts/hifi-mapping/cut_contigs_blast.py \
+                --fasta "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta" \
+                --allele_ref_dir "${allele_ref_dir}" \
+                --buffer "${cut_distance}" \
+                --out "${outdir}/break_at_soft_clip/${i}_hifi_asm_cut.fasta"
+            
+            mv "${outdir}/break_at_soft_clip/${i}_hifi_asm_cut.fasta" "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta"
+            samtools faidx "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta"
+        fi
     fi
 
     if [ ! -s ${outdir}/break_at_soft_clip/${i}_asm20_hifi_asm_to_ref.sorted.bam ]
@@ -311,34 +324,3 @@ do
 done
 
 merge_and_rmdup $sample $outdir
-
-# --- Optional: trim contigs extending beyond IG loci ---
-if [[ -n "$cut_distance" ]]; then
-    echo "Running contig trimming with buffer=${cut_distance}bp..."
-    final_dir=${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq
-    cut_dir=${final_dir}/cut_step
-    mkdir -p "${cut_dir}"
-
-    # Cut contigs based on IG loci boundaries + buffer
-    python /opt/wasp/scripts/hifi-mapping/cut_contigs.py \
-        "${final_dir}/${sample}.sorted.bam" \
-        "${bed_dir}/IG_loci.bed" \
-        "${cut_dir}/cut_contigs.fasta" \
-        --buffer "${cut_distance}"
-
-    # Remap trimmed contigs to reference
-    samtools faidx "${cut_dir}/cut_contigs.fasta"
-    align_with_minimap2_asm20 \
-        "${cut_dir}/cut_contigs.fasta" \
-        "${cut_dir}/cut_contigs_to_ref" \
-        ${reffn} ${threads} "${minimap_option}"
-
-    # Replace final outputs with cut versions
-    bedtools intersect -abam "${cut_dir}/cut_contigs_to_ref.sorted.bam" \
-        -b "${bed_dir}/IG_loci.bed" > "${final_dir}/${sample}.sorted.bam"
-    samtools index "${final_dir}/${sample}.sorted.bam"
-    samtools view "${final_dir}/${sample}.sorted.bam" | \
-        awk '{ print ">"$1"\n"$10 }' > "${final_dir}/contigs.fasta"
-
-    echo "Contig trimming complete."
-fi

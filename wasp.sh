@@ -186,7 +186,7 @@ else
     # -----------------------------------------------------------------------
     bash /opt/wasp/scripts/annotation/create_fofn_from_asm.sh "${outdir}" "${sample}" "${ccs}"
     fofn="${outdir}/fofn.tsv"
-    bash /opt/wasp/scripts/hifi-mapping/pipeline.sh "${outdir}" "${ccs}" "${threads}" "${sample}" "${reference_fasta}" "${minimap_option}" "${bed_dir}" "${cut_distance}"
+    bash /opt/wasp/scripts/hifi-mapping/pipeline.sh "${outdir}" "${ccs}" "${threads}" "${sample}" "${reference_fasta}" "${minimap_option}" "${bed_dir}" "${cut_distance}" "${allele_ref_dir}"
     if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
         /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/process_alleles.py ${sample} ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam ${reference_fasta} ${bed_dir} ${allele_ref_dir} ${outdir}
     fi
