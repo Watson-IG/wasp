@@ -328,12 +328,12 @@ def run_digger_per_locus(
                 cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+", motif_dir=motif_dir)
                 print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
                 subprocess.run(cmd_fwd, check=True, cwd=locus_outdir)
-                _check_digger_output(output_fwd, locus, sense="+")
+                _check_digger_output(output_fwd, locus, sense="forward")
 
                 cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-", motif_dir=motif_dir)
                 print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
                 subprocess.run(cmd_rev, check=True, cwd=locus_outdir)
-                _check_digger_output(output_rev, locus, sense="-")
+                _check_digger_output(output_rev, locus, sense="reverse")
 
                 # Merge the two IGK outputs
                 merged_output = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
