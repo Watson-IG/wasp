@@ -97,10 +97,6 @@ fi
 user_assembly=false
 if [[ ${#locus_fasta_args[@]} -gt 0 ]]; then
     user_assembly=true
-    if [[ "$mode" != "denovo" ]]; then
-        echo "Note: --locus_fasta provided, forcing mode to 'denovo' (was '${mode}')"
-        mode="denovo"
-    fi
     # Validate each LOCUS=FILE pair
     for lf in "${locus_fasta_args[@]}"; do
         if [[ "$lf" != *"="* ]]; then
@@ -156,30 +152,36 @@ fi
 
 if [[ "$user_assembly" == true ]]; then
     # -----------------------------------------------------------------------
-    # User-supplied assembly path: skip hifiasm, run digger directly
+    # User-supplied assembly path: skip hifiasm, directly map and/or run digger
     # -----------------------------------------------------------------------
     echo "Running with user-supplied locus FASTAs — skipping hifiasm assembly"
 
     # Build --locus_fasta args for run_digger.py
-    locus_fasta_py_args=()
+    locus_fasta_py_args=("--no-blast")
+    cat_fasta="${outdir}/full_asm_for_digger.fasta"
+    rm -f "$cat_fasta"
     for lf in "${locus_fasta_args[@]}"; do
         locus_fasta_py_args+=("--locus_fasta" "$lf")
+        cat "${lf#*=}" >> "$cat_fasta"
     done
 
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/run_digger.py \
-        -species "${species}" \
-        -allele_ref_dir "${allele_ref_dir}" \
-        -reads "${outdir}/reads.fasta" \
-        -minimap_option "${ccs_minimap_option}" \
-        -threads "${threads}" \
-        --no-blast \
-        "${locus_fasta_py_args[@]}" \
-        "${motif_dir_arg[@]}" \
-        "${outdir}"
+    fofn="${outdir}/fofn.tsv"
+    mkdir -p "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq"
+    bam="${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam"
 
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/qc/plotReadLengths.py ${outdir}/reads.fasta ${outdir}/${sample}_readLengthHistogram.png
-    bash /opt/wasp/scripts/qc/move_to_results.sh "${sample}" "${outdir}" "${threads}" "${config_base}" "${mode}"
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/getFasta.py --directory $PWD/results/${sample}/alleles --mode ${mode}
+    if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+        echo "Mapping user-supplied contigs to reference genome..."
+        minimap2 -x "${minimap_option:-asm20}" -t "${threads}" --secondary=yes -L -a "${reference_fasta}" "${cat_fasta}" > "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sam"
+        samtools view -Sbh "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sam" > "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.bam"
+        samtools sort -@ "${threads}" "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.bam" -o "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.tmp.sorted.bam"
+        samtools index "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.tmp.sorted.bam"
+        bedtools intersect -abam "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.tmp.sorted.bam" -b "${bed_dir}/IG_loci.bed" > "$bam"
+        samtools index "$bam"
+        cp "$cat_fasta" "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta"
+        rm -f "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sam" "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.bam" "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.tmp.sorted.bam"
+
+        bash /opt/wasp/scripts/annotation/create_fofn_from_asm.sh "${outdir}" "${sample}" "${ccs}" "${bam}"
+    fi
 else
     # -----------------------------------------------------------------------
     # Standard path: hifiasm assembly + full pipeline
@@ -187,45 +189,54 @@ else
     bash /opt/wasp/scripts/annotation/create_fofn_from_asm.sh "${outdir}" "${sample}" "${ccs}"
     fofn="${outdir}/fofn.tsv"
     bash /opt/wasp/scripts/hifi-mapping/pipeline.sh "${outdir}" "${ccs}" "${threads}" "${sample}" "${reference_fasta}" "${minimap_option}" "${bed_dir}" "${cut_distance}" "${allele_ref_dir}"
-    if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
-        /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/process_alleles.py ${sample} ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam ${reference_fasta} ${bed_dir} ${allele_ref_dir} ${outdir}
-    fi
-
-    if [[ "$mode" == "denovo" || "$mode" == "combined" ]]; then
-        cat ${outdir}/break_at_soft_clip/1_hifi_asm.fasta ${outdir}/break_at_soft_clip/2_hifi_asm.fasta > ${outdir}/full_asm_for_digger.fasta
-        /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/run_digger.py -species "${species}" -allele_ref_dir "${allele_ref_dir}" -reads "${outdir}/reads.fasta" -minimap_option "${ccs_minimap_option}" -threads "${threads}" "${motif_dir_arg[@]}" "${outdir}"
-    fi
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/qc/get_asm_stats.py  ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm.stats
-    samtools stats ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm-to-ref.stats
-    samtools flagstat ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm-to-ref.flagstats
-    if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
-        /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/read-support/get_read_support_VDJs.py ${fofn} ${reference_fasta} ${bed_dir}/IG_loci.bed ${threads} ${outdir} ${ccs_minimap_option}
-    fi
-
-    # In combined mode, merge the reference-guided and digger allele tables per locus
-    if [[ "$mode" == "combined" ]]; then
-        loci_list=("IGH" "IGK" "IGL" "TRA" "TRB" "TRD" "TRG")
-        mkdir -p "${outdir}/combined_alleles"
-        for locus in "${loci_list[@]}"; do
-            ref_csv="${outdir}/read_support/${sample}/imported_genes/${locus}/${sample}_make_gene_file_imported_with_read_support.csv"
-            digger_csv="${outdir}/digger_read_support/${locus}_digger_read_support.csv"
-            combined_csv="${outdir}/combined_alleles/${sample}_${locus}_combined_alleles.csv"
-            if [[ -f "$ref_csv" && -f "$digger_csv" ]]; then
-                /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/merge_allele_tables.py "$ref_csv" "$digger_csv" "$combined_csv"
-            elif [[ -f "$ref_csv" ]]; then
-                echo "Warning: No digger results for ${locus}, skipping merge."
-            elif [[ -f "$digger_csv" ]]; then
-                echo "Warning: No reference-guided results for ${locus}, skipping merge."
-            fi
-        done
-    fi
-
-    bash /opt/wasp/scripts/annotation/get_vcf/final_vcf.sh ${sample} ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam ${reference_fasta} ${threads} ${annoconfig} ${bed_dir} "${outdir}/ccs_cov/ccs_to_ref.sorted.bam"
-    #bash /opt/wasp/scripts/qc/perscov.sh "${sample}" "${outdir}/read_support/${sample}/ccs_to_pers/output.sorted.bam" "${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam" "${bed_dir}/IG_loci.bed" "${outdir}"
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/qc/plotReadLengths.py ${outdir}/reads.fasta ${outdir}/${sample}_readLengthHistogram.png
-    bash /opt/wasp/scripts/qc/move_to_results.sh "${sample}" "${outdir}" "${threads}" "${config_base}" "${mode}"
-    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/getFasta.py --directory $PWD/results/${sample}/alleles --mode ${mode}
+    bam="${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.sorted.bam"
 fi
+
+if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/process_alleles.py ${sample} ${bam} ${reference_fasta} ${bed_dir} ${allele_ref_dir} ${outdir}
+fi
+
+if [[ "$mode" == "denovo" || "$mode" == "combined" ]]; then
+    if [[ "$user_assembly" == false ]]; then
+        cat ${outdir}/break_at_soft_clip/1_hifi_asm.fasta ${outdir}/break_at_soft_clip/2_hifi_asm.fasta > ${outdir}/full_asm_for_digger.fasta
+        locus_fasta_py_args=()
+    fi
+    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/run_digger.py -species "${species}" -allele_ref_dir "${allele_ref_dir}" -reads "${outdir}/reads.fasta" -minimap_option "${ccs_minimap_option}" -threads "${threads}" "${locus_fasta_py_args[@]}" "${motif_dir_arg[@]}" "${outdir}"
+fi
+
+/opt/wasp/conda/bin/python /opt/wasp/scripts/qc/get_asm_stats.py  ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm.stats
+
+if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+    samtools stats ${bam} > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm-to-ref.stats
+    samtools flagstat ${bam} > ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/${sample}.asm-to-ref.flagstats
+    /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/read-support/get_read_support_VDJs.py ${fofn} ${reference_fasta} ${bed_dir}/IG_loci.bed ${threads} ${outdir} ${ccs_minimap_option}
+fi
+
+# In combined mode, merge the reference-guided and digger allele tables per locus
+if [[ "$mode" == "combined" ]]; then
+    loci_list=("IGH" "IGK" "IGL" "TRA" "TRB" "TRD" "TRG")
+    mkdir -p "${outdir}/combined_alleles"
+    for locus in "${loci_list[@]}"; do
+        ref_csv="${outdir}/read_support/${sample}/imported_genes/${locus}/${sample}_make_gene_file_imported_with_read_support.csv"
+        digger_csv="${outdir}/digger_read_support/${locus}_digger_read_support.csv"
+        combined_csv="${outdir}/combined_alleles/${sample}_${locus}_combined_alleles.csv"
+        if [[ -f "$ref_csv" && -f "$digger_csv" ]]; then
+            /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/merge_allele_tables.py "$ref_csv" "$digger_csv" "$combined_csv"
+        elif [[ -f "$ref_csv" ]]; then
+            echo "Warning: No digger results for ${locus}, skipping merge."
+        elif [[ -f "$digger_csv" ]]; then
+            echo "Warning: No reference-guided results for ${locus}, skipping merge."
+        fi
+    done
+fi
+
+if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+    bash /opt/wasp/scripts/annotation/get_vcf/final_vcf.sh ${sample} ${bam} ${reference_fasta} ${threads} ${annoconfig} ${bed_dir} "${outdir}/ccs_cov/ccs_to_ref.sorted.bam"
+fi
+
+/opt/wasp/conda/bin/python /opt/wasp/scripts/qc/plotReadLengths.py ${outdir}/reads.fasta ${outdir}/${sample}_readLengthHistogram.png
+bash /opt/wasp/scripts/qc/move_to_results.sh "${sample}" "${outdir}" "${threads}" "${config_base}" "${mode}"
+/opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/getFasta.py --directory $PWD/results/${sample}/alleles --mode ${mode}
 
 # Sanity check for missing genes against gene.bed
 /opt/wasp/conda/bin/python /opt/wasp/scripts/qc/check_missing_genes.py "$PWD/results/${sample}/alleles" "${bed_dir}/gene.bed"
