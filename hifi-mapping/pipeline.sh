@@ -166,10 +166,10 @@ function merge_and_rmdup {
     mkdir -p "$outdir"
 
     # Add valid read-group tags
-    samtools addreplacerg -r "ID:1" -r "SM:hap1" -o "${dir}/break_at_soft_clip/temp1.bam" "${dir}/break_at_soft_clip/1_asm20_hifi_asm_to_ref.sorted.bam"
+    samtools addreplacerg -w -r "ID:1" -r "SM:hap1" -o "${dir}/break_at_soft_clip/temp1.bam" "${dir}/break_at_soft_clip/1_asm20_hifi_asm_to_ref.sorted.bam"
     mv "${dir}/break_at_soft_clip/temp1.bam" "${dir}/break_at_soft_clip/1_asm20_hifi_asm_to_ref.sorted.bam"
 
-    samtools addreplacerg -r "ID:2" -r "SM:hap2" -o "${dir}/break_at_soft_clip/temp2.bam" "${dir}/break_at_soft_clip/2_asm20_hifi_asm_to_ref.sorted.bam"
+    samtools addreplacerg -w -r "ID:2" -r "SM:hap2" -o "${dir}/break_at_soft_clip/temp2.bam" "${dir}/break_at_soft_clip/2_asm20_hifi_asm_to_ref.sorted.bam"
     mv "${dir}/break_at_soft_clip/temp2.bam" "${dir}/break_at_soft_clip/2_asm20_hifi_asm_to_ref.sorted.bam"
     
     # Merge, sort, index
