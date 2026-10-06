@@ -95,6 +95,8 @@ def merge_tables(ref_csv: str, digger_csv: str, output_csv: str) -> None:
         df_digger = df_digger[~df_digger['V-REGION'].isin(ref_v_regions)]
 
     merged = pd.concat([df_ref, df_digger], axis=0, ignore_index=True)
+    if 'functional' in merged.columns:
+        merged = merged[merged['functional'] != 'pseudo']
     merged.to_csv(output_csv, index=False)
     print(f"Merged {len(df_ref)} reference-guided + {len(df_digger)} digger rows -> {output_csv}")
 

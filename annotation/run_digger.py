@@ -325,15 +325,15 @@ def run_digger_per_locus(
                 output_fwd = os.path.join(locus_outdir, f"{locus}_digger_output_fwd.csv")
                 output_rev = os.path.join(locus_outdir, f"{locus}_digger_output_rev.csv")
 
-                cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="+", motif_dir=motif_dir)
-                print(f"Running digger for locus {locus} (sense +): {' '.join(cmd_fwd)}")
+                cmd_fwd = _build_digger_cmd(fasta_path, output_fwd, refs, species, locus, sense="forward", motif_dir=motif_dir)
+                print(f"Running digger for locus {locus} (sense forward): {' '.join(cmd_fwd)}")
                 subprocess.run(cmd_fwd, check=True, cwd=locus_outdir)
-                _check_digger_output(output_fwd, locus, sense="+")
+                _check_digger_output(output_fwd, locus, sense="forward")
 
-                cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="-", motif_dir=motif_dir)
-                print(f"Running digger for locus {locus} (sense -): {' '.join(cmd_rev)}")
+                cmd_rev = _build_digger_cmd(fasta_path, output_rev, refs, species, locus, sense="reverse", motif_dir=motif_dir)
+                print(f"Running digger for locus {locus} (sense reverse): {' '.join(cmd_rev)}")
                 subprocess.run(cmd_rev, check=True, cwd=locus_outdir)
-                _check_digger_output(output_rev, locus, sense="-")
+                _check_digger_output(output_rev, locus, sense="reverse")
 
                 # Merge the two IGK outputs
                 merged_output = os.path.join(locus_outdir, f"{locus}_digger_output.csv")
@@ -383,7 +383,8 @@ def map_reads_to_contigs(
     # Map reads
     subprocess.run(
         [
-            "minimap2", "-ax", minimap_option,
+            "minimap2", "-a"
+        ] + minimap_option.split() + [
             "--secondary=yes", "-t", str(threads), "-L",
             contigs_fasta, reads_fasta,
             "-o", sam_out,
@@ -455,9 +456,9 @@ def main():
     parser.add_argument("-species", required=True, help="Species name matching reference file prefix (e.g. Homo_sapiens)")
     parser.add_argument("-allele_ref_dir", required=True, help="Directory containing species-prefixed allele reference FASTAs")
     parser.add_argument("-reads", required=True, help="Path to CCS reads FASTA for read support mapping")
-    parser.add_argument("-minimap_option", default="map-hifi", help="Minimap2 preset (default: map-hifi)")
+    parser.add_argument("-minimap_option", default="-x map-hifi", help="Minimap2 preset (default: -x map-hifi)")
     parser.add_argument("-threads", type=int, default=4, help="Number of threads for minimap2/samtools")
-    parser.add_argument("--locus_fasta", nargs="+", help="User-supplied contig fasta per locus. Format: LOCUS=FILE (e.g. IGH=path/to/igh.fasta)")
+    parser.add_argument("--locus_fasta", action="append", help="User-supplied contig fasta per locus. Format: LOCUS=FILE (e.g. IGH=path/to/igh.fasta)")
     parser.add_argument("--no-blast", action="store_true", help="Skip BLAST and only run digger on user-supplied locus fastas")
     parser.add_argument("-motif_dir", default=None, help="Path to motif directory for unsupported species")
     args = parser.parse_args()

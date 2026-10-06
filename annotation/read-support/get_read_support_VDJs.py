@@ -359,7 +359,7 @@ def run_map_ccs_to_pers(fofn, scratch, mask_ref, minimap_option, threads):
             sam_out = os.path.join(outd, "ccs_to_pers", "output.sam")
             bam_out = os.path.join(outd, "ccs_to_pers", "output.bam")
             sorted_bam = os.path.join(outd, "ccs_to_pers", "output.sorted.bam")
-            safe_run(["minimap2", "-ax", minimap_option, "--secondary=yes", "-t", str(threads), "-L", pers_ref, reads_fasta, "-o", sam_out])
+            safe_run(["minimap2", "-a"] + minimap_option.split() + ["--secondary=yes", "-t", str(threads), "-L", pers_ref, reads_fasta, "-o", sam_out])
             safe_run(["samtools", "view", "-Sbh", sam_out, "-o", bam_out])
             safe_run(["samtools", "sort", "-@", str(threads), bam_out, "-o", sorted_bam])
             safe_run(["samtools", "index", sorted_bam])
