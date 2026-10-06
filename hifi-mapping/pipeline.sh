@@ -8,6 +8,9 @@ sample=$4
 reffn=$5
 minimap_option=$6
 bed_dir=$7
+cut_distance=$8
+allele_ref_dir=$9
+mode=${10:-combined}
 
 # --- NEW FUNCTION: BLAST and Split Contigs ---
 function split_assembly_contigs {
@@ -147,7 +150,7 @@ function align_with_minimap2_asm20 {
     reffn=$3
     threads=$4
     minimap_option=$5
-    minimap2 -x ${minimap_option} \
+    minimap2 ${minimap_option} \
         -t ${threads} --secondary=yes -L -a ${reffn} \
         ${fasta} > ${prefix}.sam    
     samtools view -Sbh ${prefix}.sam > ${prefix}.bam   
@@ -244,6 +247,14 @@ then
 
         mv ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.modified.fasta ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta
 
+        # Sanity check: verify haplotype assembly is non-empty
+        if [ ! -s ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta ]; then
+            echo "ASSEMBLY_WARNING: hap${i} assembly FASTA is empty — hifiasm may have failed to assemble this haplotype"
+        else
+            n_contigs=$(grep -c '^>' ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta || true)
+            echo "hap${i} assembly contains ${n_contigs} contigs"
+        fi
+
         # --- UPDATED: Split contigs BEFORE indexing and downstream processing ---
         split_assembly_contigs "${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta" "${outdir}/hifiasm"
         # ------------------------------------------------------------------------
@@ -252,54 +263,95 @@ then
     done
 fi
 
-for i in 1 2
-do
-    fn=asm.bp.hap${i}.p_ctg
-    if [ ! -s ${outdir}/hifiasm/${fn}_to_ref.sorted.bam.bai ]
-    then
-        align_with_minimap2_asm20 \
-            ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta \
-            ${outdir}/hifiasm/${fn}_to_ref \
-            ${reffn} ${threads} "${minimap_option}"
-    fi
-done
+if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+    for i in 1 2
+    do
+        fn=asm.bp.hap${i}.p_ctg
+        if [ ! -s ${outdir}/hifiasm/${fn}_to_ref.sorted.bam.bai ]
+        then
+            align_with_minimap2_asm20 \
+                ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta \
+                ${outdir}/hifiasm/${fn}_to_ref \
+                ${reffn} ${threads} "${minimap_option}"
+        fi
+    done
+fi
 
-for i in p #r
-do
-    fn=asm.bp.${i}_utg
-    if [ ! -s ${outdir}/hifiasm/${fn}_to_ref.sorted.bam.bai ]
-    then
-        align_with_minimap2_asm20 \
-            ${outdir}/hifiasm/${fn}.fasta \
-            ${outdir}/hifiasm/${fn}_to_ref \
-            ${reffn} \
-            ${threads} "${minimap_option}"
-    fi
-done
+if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+    for i in p #r
+    do
+        fn=asm.bp.${i}_utg
+        if [ ! -s ${outdir}/hifiasm/${fn}_to_ref.sorted.bam.bai ]
+        then
+            align_with_minimap2_asm20 \
+                ${outdir}/hifiasm/${fn}.fasta \
+                ${outdir}/hifiasm/${fn}_to_ref \
+                ${reffn} \
+                ${threads} "${minimap_option}"
+        fi
+    done
+fi
 
 mkdir -p ${outdir}/break_at_soft_clip
 
 for i in 1 2
 do
-    bam=${outdir}/hifiasm/asm.bp.hap${i}.p_ctg_to_ref.sorted.bam
+    if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+        bam=${outdir}/hifiasm/asm.bp.hap${i}.p_ctg_to_ref.sorted.bam
 
-    if [ ! -s ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta ]
-    then
-        python /opt/wasp/scripts/hifi-mapping/extract_soft_clip_seq.py \
-            ${bam} > ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
+        if [ ! -s ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta ]
+        then
+            python /opt/wasp/scripts/hifi-mapping/extract_soft_clip_seq.py \
+                ${bam} > ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
 
-        samtools faidx ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
-    fi
+            samtools faidx ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
+            
+            if [[ -n "$cut_distance" ]]; then
+                echo "Running BLAST-based contig trimming with buffer=${cut_distance}bp on haplotype ${i}..."
+                python /opt/wasp/scripts/hifi-mapping/cut_contigs_blast.py \
+                    --fasta "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta" \
+                    --allele_ref_dir "${allele_ref_dir}" \
+                    --buffer "${cut_distance}" \
+                    --out "${outdir}/break_at_soft_clip/${i}_hifi_asm_cut.fasta"
+                
+                mv "${outdir}/break_at_soft_clip/${i}_hifi_asm_cut.fasta" "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta"
+                samtools faidx "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta"
+            fi
+        fi
 
-    if [ ! -s ${outdir}/break_at_soft_clip/${i}_asm20_hifi_asm_to_ref.sorted.bam ]
-    then
-        align_with_minimap2_asm20 \
-            ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta \
-            ${outdir}/break_at_soft_clip/${i}_asm20_hifi_asm_to_ref \
-            ${reffn} \
-            ${threads} "${minimap_option}"
+        if [ ! -s ${outdir}/break_at_soft_clip/${i}_asm20_hifi_asm_to_ref.sorted.bam ]
+        then
+            align_with_minimap2_asm20 \
+                ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta \
+                ${outdir}/break_at_soft_clip/${i}_asm20_hifi_asm_to_ref \
+                ${reffn} \
+                ${threads} "${minimap_option}"
+        fi
+    else
+        # Denovo mode: Just copy the hifiasm contigs, optionally cut them.
+        if [ ! -s ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta ]
+        then
+            cp ${outdir}/hifiasm/asm.bp.hap${i}.p_ctg.fasta ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
+            samtools faidx ${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta
+            
+            if [[ -n "$cut_distance" ]]; then
+                echo "Running BLAST-based contig trimming with buffer=${cut_distance}bp on haplotype ${i}..."
+                python /opt/wasp/scripts/hifi-mapping/cut_contigs_blast.py \
+                    --fasta "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta" \
+                    --allele_ref_dir "${allele_ref_dir}" \
+                    --buffer "${cut_distance}" \
+                    --out "${outdir}/break_at_soft_clip/${i}_hifi_asm_cut.fasta"
+                
+                mv "${outdir}/break_at_soft_clip/${i}_hifi_asm_cut.fasta" "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta"
+                samtools faidx "${outdir}/break_at_soft_clip/${i}_hifi_asm.fasta"
+            fi
+        fi
     fi
 done
 
-merge_and_rmdup $sample $outdir
-# align_and_process $sample $outdir
+if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
+    if [ ! -s ${outdir}/merged_bam/final_asm20_to_ref_with_secondarySeq/contigs.fasta ]
+    then
+        merge_and_rmdup $sample $outdir
+    fi
+fi

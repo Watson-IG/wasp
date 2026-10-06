@@ -43,7 +43,7 @@ function run_map_ccs_to_pers {
 	    > ${outd}/ccs_to_pers/pers_ref.fasta
 	samtools faidx ${outd}/ccs_to_pers/pers_ref.fasta
 	#make not gpu one day
-	minimap2 -ax ${minimap_option} --secondary=yes -t ${threads} -L ${outd}/ccs_to_pers/pers_ref.fasta ${scratch}/reads.fasta > ${outd}/ccs_to_pers/output.sam;
+	minimap2 -a ${minimap_option} --secondary=yes -t ${threads} -L ${outd}/ccs_to_pers/pers_ref.fasta ${scratch}/reads.fasta > ${outd}/ccs_to_pers/output.sam;
     samtools view -Sbh ${outd}/ccs_to_pers/output.sam > ${outd}/ccs_to_pers/output.bam;
     samtools sort -@ ${threads} ${outd}/ccs_to_pers/output.bam -o ${outd}/ccs_to_pers/output.sorted.bam;
     samtools index ${outd}/ccs_to_pers/output.sorted.bam;
