@@ -241,7 +241,6 @@ if [[ "$mode" == "ref" || "$mode" == "combined" ]]; then
     bash /opt/wasp/scripts/annotation/get_vcf/final_vcf.sh ${sample} ${bam} ${reference_fasta} ${threads} ${annoconfig} ${bed_dir} "${outdir}/ccs_cov/ccs_to_ref.sorted.bam"
 fi
 
-/opt/wasp/conda/bin/python /opt/wasp/scripts/qc/plotReadLengths.py ${outdir}/reads.fasta ${outdir}/${sample}_readLengthHistogram.png
 bash /opt/wasp/scripts/qc/move_to_results.sh "${sample}" "${outdir}" "${threads}" "${config_base}" "${mode}"
 /opt/wasp/conda/bin/python /opt/wasp/scripts/annotation/getFasta.py --directory $PWD/results/${sample}/alleles --mode ${mode}
 
