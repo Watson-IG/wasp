@@ -63,7 +63,7 @@ def ref_filter(df):
 
 def digger_filter(df):
     """Filter for digger allele tables (no coverage filtering for now)."""
-    return df.dropna(subset=["gene type", "seq"])
+    return df.dropna(subset=["gene_type", "seq"])
 
 
 # Mode-specific configuration: (file pattern suffix, output suffix, name_col, seq_col, filter_fn)
@@ -84,7 +84,7 @@ MODE_CONFIG = {
         ],
     },
     "digger": {
-        "name_col": "gene type",
+        "name_col": "gene_type",
         "seq_col": "seq",
         "filter_fn": digger_filter,
         "loci": [

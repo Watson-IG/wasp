@@ -121,7 +121,9 @@ def blast_contigs(assembly_fasta: str, db_path: str, outdir: str) -> str:
             "-db", db_path,
             "-outfmt", "6 qseqid sseqid pident length evalue bitscore slen",
             "-evalue", "1e-5",
-            "-max_target_seqs", "20",
+            # Keep plenty of targets so V/D/J hits aren't crowded out by
+            # constant-region hits (e.g. IGHM/IGHG) on contigs spanning both.
+            "-max_target_seqs", "200",
             "-out", blast_out,
         ],
         check=True,
@@ -169,10 +171,18 @@ def bin_contigs_by_locus(
             # Try to extract the locus prefix from the subject sequence ID.
             # Reference sequence names typically start with the locus,
             # e.g. "IGHV1-2*01", "IGKJ5*01", "TRAV1*01"
+            # Only V, D or J genes count (the character right after the locus,
+            # i.e. the 4th character of the gene name). This ignores constant
+            # genes such as IGHM, IGHG1, IGKC, IGLC, TRAC whose hits are
+            # fragmented by introns and would otherwise fail the coverage filter.
             for locus in known_loci:
-                if locus in sseqid:
+                idx = sseqid.find(locus)
+                if idx == -1:
+                    continue
+                seg_idx = idx + len(locus)
+                if seg_idx < len(sseqid) and sseqid[seg_idx].upper() in "VDJ":
                     contig_hits[qseqid].append(locus)
-                    break
+                break
 
     contig_to_loci: dict[str, set[str]] = defaultdict(set)
     for qseqid, hits in contig_hits.items():
@@ -417,7 +427,8 @@ def run_read_support(
     """Run wasptk readsupport on each digger output CSV.
 
     wasptk readsupport -f <reference.fa> <allele_annotation.csv> <mapped.bam> <output.csv>
-        --gene-col 'gene type' --start-col gene_start --end-col gene_end
+        --gene-col gene_type --start-col start --end-col end
+        -v seq -d seq -j seq -c seq
 
     The reference FASTA is the per-locus contigs FASTA (i.e. the assembly
     contigs that digger annotated and that reads were mapped to).
@@ -439,9 +450,14 @@ def run_read_support(
             digger_csv,
             sorted_bam,
             output_csv,
-            "--gene-col", "gene type",
+            "--gene-col", "gene_type",
             "--start-col", "start",
             "--end-col", "end",
+            # digger stores all gene sequences in a single 'seq' column
+            "-v", "seq",
+            "-d", "seq",
+            "-j", "seq",
+            "-c", "seq",
         ]
 
         print(f"Running wasptk readsupport for {locus}: {' '.join(cmd)}")
